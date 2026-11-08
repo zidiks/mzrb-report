@@ -25,15 +25,15 @@ try{
  $book.SaveAs($sourcePath,51);$book.Close($false);$book=$null;Close-Excel $excel;$excel=$null
  $beforeBasis=File-Sha256 $basisPath;$beforeSource=File-Sha256 $sourcePath
  $s=Analyze-Inputs $sourcePath '01.11.26' ([datetime]'2026-10-01') $basisPath 'Report' $true
- Assert ($s.Lines[0].BasisRow -eq 9) 'Native analysis did not match basis row'
+ Assert ($s.Automatic -and -not (Needs-Review $s)) 'Native analysis must select automatic contract export without a wizard'
  [void](Save-Report $s $output $true)
  Assert ((File-Sha256 $basisPath) -eq $beforeBasis -and (File-Sha256 $sourcePath) -eq $beforeSource) 'Input workbook changed'
  $excel=New-Excel;$book=$excel.Workbooks.Open($output,0,$true);$ws=$book.Worksheets.Item(1)
  Assert ($book.Worksheets.Count -eq 1 -and $book.FileFormat -eq 56) 'Output must contain selected report as real XLS'
- Assert ($ws.Range('F9').Value2 -eq 900 -and $ws.Range('K9').Value2 -eq 0 -and $ws.Range('M9').Value2 -eq 3) 'Override/zero/preservation failed in output'
+ Assert ($ws.Range('F9').Value2 -eq 900 -and $ws.Range('K9').Value2 -eq 0 -and $ws.Range('M9').Value2 -eq 0) 'Override/zero/preservation failed in output'
  Assert ($ws.Range('G9').Value2 -eq 'Institution A' -and $ws.Range('H9').Value2 -eq 250 -and $ws.Range('G10').Value2 -eq 'Institution B' -and $ws.Range('H10').Value2 -eq 100) 'Institution data lost'
  Assert ($ws.Range('B11').Value2 -eq 'Drug B' -and $ws.Range('F11').Value2 -eq 200) 'Unmatched base position lost'
- Assert ($ws.Range('F13').Value2 -eq 1101 -and $ws.Range('H12').Value2 -eq 350) 'Incorrect calculated totals'
+ Assert ($ws.Range('F13').Value2 -eq 1098 -and $ws.Range('H12').Value2 -eq 350) 'Incorrect calculated totals'
  Assert ($ws.Range('F12').HasFormula -and $ws.Range('F13').HasFormula -and $ws.Range('H12').HasFormula) 'Totals must be formulas'
  Assert ($ws.UsedRange.Columns.Count -eq 13) 'Phantom columns remain'
  Assert (Test-Path -LiteralPath (Join-Path $dir 'Проверки\result.html')) 'Merge audit missing'

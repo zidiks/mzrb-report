@@ -16,7 +16,7 @@ function Session-Current($s,[string]$source,[string]$sheet,[string]$period,[stri
 function Cache-Path($source,$sheet,$period,$basisPath='',$basisSheet=''){return Join-Path $PSScriptRoot ('Data\Work\'+(Get-Hash ($source.ToLowerInvariant()+'|'+$sheet+'|'+$period+'|'+$basisPath.ToLowerInvariant()+'|'+$basisSheet))+'.json')}
 function Save-Cache($s){Save-Session $s (Cache-Path $s.Source $s.Sheet $s.PeriodKey ([string]$s.BasisPath) ([string]$s.BasisSheet))}
 function Pending-Groups($s){$ids=@{};foreach($l in $s.Lines){if(-not $l.Reviewed){$ids[$l.Group]=$true}};return @($s.Groups | Where-Object {$ids.ContainsKey($_.Id)})}
-function Needs-Review($s){return @(Pending-Groups $s).Count -gt 0 -or ($s.Warnings.Count -gt 0 -and -not $s.Confirmed)}
+function Needs-Review($s){if($s.Automatic){return $false};return @(Pending-Groups $s).Count -gt 0 -or ($s.Warnings.Count -gt 0 -and -not $s.Confirmed)}
 function Unique-Output($s,[bool]$draft){
  $dir=Join-Path ([IO.Path]::GetDirectoryName($s.Source)) 'Готовые отчёты';[void][IO.Directory]::CreateDirectory($dir)
  $date=[datetime]::ParseExact($s.PeriodKey,'yyyy-MM',[Globalization.CultureInfo]::InvariantCulture);$stem=$date.ToString('MMyyyy')+$(if($draft){'_черновик'}else{'_отчёт'});$ext='.xls';$path=Join-Path $dir ($stem+$ext);$number=2

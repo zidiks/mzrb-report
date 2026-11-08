@@ -50,7 +50,7 @@
       <Button x:Name="ChooseBasis" Grid.Column="1" Content="Выбрать файл 1С"/>
      </Grid>
      <ComboBox x:Name="BasisSheets" IsEnabled="False" Margin="0,10,0,0" AutomationProperties.Name="Вкладка отчёта 1С"/>
-     <TextBlock Text="Данные и учреждения сохранятся. Суммы из расчётов заменят только соответствующие поля." TextWrapping="Wrap" FontSize="12" Foreground="#61766F" Margin="0,8,0,0"/>
+     <TextBlock Text="Строки и учреждения — из 1С. Суммы подбираются по договору автоматически, включая рассчитанные нули." TextWrapping="Wrap" FontSize="12" Foreground="#61766F" Margin="0,8,0,0"/>
     </StackPanel>
    </Border>
    <Border Grid.Row="2" Style="{StaticResource Card}" x:Name="FileCard" AllowDrop="True" Margin="0,0,0,14">
@@ -94,7 +94,7 @@
      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
      <StackPanel>
       <TextBlock x:Name="ResultTitle" Text="Отчёт готов" FontSize="18" FontWeight="SemiBold"/>
-      <TextBlock x:Name="ResultDetails" Foreground="#46675B" Margin="0,5,0,0"/>
+      <TextBlock x:Name="ResultDetails" TextWrapping="Wrap" Foreground="#46675B" Margin="0,5,0,0"/>
       <TextBlock x:Name="ResultFile" FontSize="12" Foreground="#46675B" TextTrimming="CharacterEllipsis" Margin="0,8,0,0"/>
      </StackPanel>
      <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="20,0,0,0">

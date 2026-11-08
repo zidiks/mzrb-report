@@ -84,7 +84,7 @@ function Template-Hash($matrix,$profile){
 function New-Line($group,[string]$name){
  return [pscustomobject]@{Group=$group.Id;SourceRow=$group.Row;Number=$group.Number;Name=$name;Supplier=$group.Supplier;Contract=$group.Contract;ContractDate=$group.ContractDate;Transfer=[decimal]0;Redistribution=[decimal]0;Conversion=[decimal]0;Fx=[decimal]0;Commission=[decimal]0;Discount=[decimal]0;Other=[decimal]0;Reviewed=$false;Note='';ReferenceRow=0;RedistributionRow=0}
 }
-function Analyze-Matrix($raw,$template,[string]$source,[string]$templatePath,[string]$sheet,[datetime]$period,[bool]$useReference=$true,[bool]$allowEmpty=$false){
+function Analyze-Matrix($raw,$template,[string]$source,[string]$templatePath,[string]$sheet,[datetime]$period,[bool]$useReference=$true,[bool]$allowEmpty=$false,[bool]$basisDriven=$false){
  if(-not (Text (Cell $raw 1 22)).Contains('Отпущено')){
   $found=$false;for($r=1;$r -le [Math]::Min(7,$raw.LastRow);$r++){if((Text (Cell $raw $r 22)).Contains('Отпущено')){$found=$true}}
   if(-not $found){throw 'На выбранной вкладке не найден заголовок «Отпущено ЛПУ» в колонке 22.'}
@@ -101,6 +101,12 @@ function Analyze-Matrix($raw,$template,[string]$source,[string]$templatePath,[st
   if($no -match '^\d+([.,]\d+)?$' -and (Text (Cell $raw $r 7)) -ne ''){$block=[pscustomobject]@{Id=[string]$r;Row=$r;Number=$no;Contract=(Text (Cell $raw $r 7));ContractDate='';Supplier='';Rows=(New-Object Collections.Generic.List[int])};$blocks.Add($block)}
   if($null -eq $block){continue};if($no -eq 'Итого'){$block=$null;continue};$block.Rows.Add($r)
  }
+ $allContracts=New-Object Collections.Generic.List[object]
+ foreach($b in $blocks){
+  $sup=@($b.Rows | ForEach-Object {Text (Cell $raw $_ 8)} | Where-Object {$_} | Select-Object -Unique)
+  $allContracts.Add([pscustomobject]@{Id=$b.Id;Row=$b.Row;Contract=$b.Contract;ContractDate=(Text (Cell $raw ($b.Row+1) 7));Supplier=($sup -join ' ').Replace('- ','')})
+ }
+ $s | Add-Member NoteProperty AllContracts $allContracts.ToArray() -Force
  foreach($block in $blocks){
   $events=New-Object Collections.Generic.List[object]
   foreach($r in $block.Rows){
@@ -115,7 +121,7 @@ function Analyze-Matrix($raw,$template,[string]$source,[string]$templatePath,[st
   if($events.Count -eq 0){continue}
   $supplier=New-Object Collections.Generic.List[string];$names=New-Object Collections.Generic.List[string];$costs=New-Object Collections.Generic.List[object]
   foreach($r in $block.Rows){
-   $sup=Text (Cell $raw $r 8);if($sup){$supplier.Add($sup)}
+   $sup=Text (Cell $raw $r 8);if($sup -and -not $supplier.Contains($sup)){$supplier.Add($sup)}
    $name=Text (Cell $raw $r 9);if($name -and $name.ToLowerInvariant().IndexOf('скидка') -lt 0 -and -not $names.Contains($name)){$names.Add($name)}
    $paymentDate=Parse-Date (Cell $raw $r 14)
    $ex=[pscustomobject]@{BlockId=$block.Id;Contract=$block.Contract;Row=$r;PaymentDate=$(if($null -ne $paymentDate){$paymentDate.ToString('dd.MM.yyyy')}else{Text (Cell $raw $r 14)});Total17=(Money (Cell $raw $r 17));Conversion18=(Money (Cell $raw $r 18));Vat19=(Money (Cell $raw $r 19));Commission20=(Money (Cell $raw $r 20));Other21=(Money (Cell $raw $r 21))}
@@ -141,18 +147,19 @@ function Analyze-Matrix($raw,$template,[string]$source,[string]$templatePath,[st
    $otherMatch=@($costs | Where-Object {$_.Other21 -ne 0 -and [Math]::Abs($_.Other21-$ev.Amount) -le 0.01}).Count -gt 0
    if($candidates.Count -eq 1 -and -not $otherMatch){$conversion+=$candidates[0]}elseif(@($costs | Where-Object {$_.Conversion18 -ne 0}).Count -gt 0){$review=$true;$notes.Add("Строка $($ev.Row): распределение расходов требует проверки по колонкам 18–21.")}
   }}
+  $unsafeCosts=$review
   $known=@();$key=Normal $block.Contract;if($refs.ContainsKey($key)){$known=@($refs[$key].ToArray())}
   if($names.Count -gt 1){$joined=($names -join ' ').Replace('- ','-');$match=@($known | Where-Object {(Normal $_) -eq (Normal $joined)});$continuation=$true;for($i=1;$i -lt $names.Count;$i++){if($names[$i].Length -gt 2 -and -not [char]::IsLower($names[$i][0])){$continuation=$false}}
    if($match.Count -gt 0 -or $continuation -or @($names | Select-Object -SkipLast 1 | Where-Object {$_.EndsWith('-')}).Count -gt 0){$names.Clear();$names.Add($(if($match.Count){$match[0]}else{$joined}))}
   }
-  if($names.Count -eq 1 -and $known.Count -gt 1){$names.Clear();foreach($n in $known){$names.Add($n)};$review=$true}
-  if($names.Count -eq 0){if($known.Count){foreach($n in $known){$names.Add($n)}}else{$names.Add('Укажите наименование')};$review=$true}
+  if(-not $basisDriven -and $names.Count -eq 1 -and $known.Count -gt 1){$names.Clear();foreach($n in $known){$names.Add($n)};$review=$true}
+  if($names.Count -eq 0){if(-not $basisDriven -and $known.Count){foreach($n in $known){$names.Add($n)}}else{$names.Add('Укажите наименование')};$review=$true}
   if($names.Count -gt 1){$review=$true;$notes.Add('Несколько препаратов: общая сумма временно стоит в первой строке. Распределите её, не увеличивая сумму договора.')}
   if($null -eq (Parse-Date $block.ContractDate)){$review=$true;$notes.Add('Проверьте дату договора в строке под его номером.')}
-  $vat=Sum-Events $events 'Vat';if($vat -ne 0){$review=$true;$notes.Add('НДС включён в прочие расходы; требуется проверка.')}
-  if(@($events | Where-Object {$_.Category -eq 'Unknown'}).Count){$review=$true;$notes.Add('Есть нераспознанная месячная метка: распределите сумму вручную.')}
+  $vat=Sum-Events $events 'Vat';if($vat -ne 0){$unsafeCosts=$true;$review=$true;$notes.Add('НДС включён в прочие расходы; требуется проверка.')}
+  if(@($events | Where-Object {$_.Category -eq 'Unknown'}).Count){$unsafeCosts=$true;$review=$true;$notes.Add('Есть нераспознанная месячная метка: распределите сумму вручную.')}
   $expected=@((Sum-Events $events 'Transfer'),(Sum-Events $events 'Redistribution'),$conversion,(Sum-Events $events 'Fx'),$commission,(Sum-Events $events 'Discount'),((Sum-Events $events 'Commission')+(Sum-Events $events 'Expenses')+$vat+(Sum-Events $events 'Other')-$conversion-$commission))
-  $g=[pscustomobject]@{Id=$block.Id;Row=$block.Row;Contract=$block.Contract;Expected=$expected;NeedsReview=$review;Note=($notes -join ' ')};$s.Groups.Add($g)
+  $g=[pscustomobject]@{Id=$block.Id;Row=$block.Row;Contract=$block.Contract;Expected=$expected;UnsafeCosts=$unsafeCosts;NeedsReview=$review;Note=($notes -join ' ')};$s.Groups.Add($g)
   for($i=0;$i -lt $names.Count;$i++){$line=New-Line $block $names[$i];$line.Note=$g.Note;$line.Reviewed=-not $review;if($i -eq 0){for($j=0;$j -lt 7;$j++){$line.($script:Fields[$j])=[decimal]$expected[$j]}};$s.Lines.Add($line)}
  }
  if($s.Lines.Count -eq 0 -and -not $allowEmpty){throw 'За выбранный месяц в колонке 22 не найдены записи. Проверьте вкладку и месяц.'}
@@ -206,8 +213,8 @@ function Validate-Session($s,[bool]$final){
    for($i=0;$i -lt 2;$i++){$sum=[decimal]0;foreach($l in $lines){$sum+=Money $l.($script:Fields[$i])};if($sum -ne (Money $g.Expected[$i])){$errors.Add("Договор $($g.Contract): изменена общая сумма отпуска / перераспределения.")}}
   }
  }
- if($s.BasisPath){foreach($l in $s.Lines){if([int]$l.BasisRow -lt 0){$errors.Add(('Договор '+$l.Contract+': выберите строку 1С или 0, чтобы не переносить сумму.'))}elseif([int]$l.BasisRow -gt 0 -and $s.BasisRows){$match=@($s.BasisRows | Where-Object {$_.Row -eq $l.BasisRow -and (Contract-Key $_.Contract) -eq (Contract-Key $l.Contract)});if($match.Count -ne 1){$errors.Add(('Договор '+$l.Contract+': в выбранной строке 1С нет этого договора.'))}}}}
- if($final){foreach($l in $s.Lines){if(-not $l.Reviewed){$errors.Add("Не проверен договор $($l.Contract).")}elseif($null -eq $s.Reference -and -not (Text $l.Name)){$errors.Add('Есть позиция без наименования.')}};if($s.Warnings.Count -gt 0 -and -not $s.Confirmed){$errors.Add('Просмотрите записи с неопределённым периодом и поставьте флажок подтверждения.')}}
+ if($s.BasisPath){foreach($l in $s.Lines){if([int]$l.BasisRow -lt 0){$errors.Add(('Договор '+$l.Contract+': выберите строку 1С или 0, чтобы не переносить сумму.'))}elseif([int]$l.BasisRow -gt 0 -and $s.BasisRows){$match=@($s.BasisRows | Where-Object {$_.Row -eq $l.BasisRow -and ($s.Automatic -or (Contract-Key $_.Contract) -eq (Contract-Key $l.Contract))});if($match.Count -ne 1){$errors.Add(('Договор '+$l.Contract+': в выбранной строке 1С нет этого договора.'))}}}}
+ if($final -and -not $s.Automatic){foreach($l in $s.Lines){if(-not $l.Reviewed){$errors.Add("Не проверен договор $($l.Contract).")}elseif($null -eq $s.Reference -and -not (Text $l.Name)){$errors.Add('Есть позиция без наименования.')}};if($s.Warnings.Count -gt 0 -and -not $s.Confirmed){$errors.Add('Просмотрите записи с неопределённым периодом и поставьте флажок подтверждения.')}}
  return $errors.ToArray()
 }
 function Set-ExcelText($sheet,[int]$row,[int]$column,$value){$text=if($null -eq $value){''}else{[Convert]::ToString($value,$script:Invariant)};if($text -ne ''){$sheet.Cells.Item($row,$column).Formula="'$text"}}
@@ -297,7 +304,7 @@ function Write-Audit($s,[string]$path){
 }
 
 # Two-input reports: the 1C book owns all rows and metadata; the ledger supplies explicit replacements.
-function Contract-Key($value){return [regex]::Replace((Text $value).ToUpperInvariant(),'\s','')}
+function Contract-Key($value){$key=[regex]::Replace((Text $value).ToUpperInvariant(),'\s','').TrimStart([char]'№');if((Normal $key) -match '^дистриб.*контр') {return '@DISTRIBUTOR'};return $key}
 function Read-Basis($matrix,[datetime]$period){
  if(-not (Text (Cell $matrix 6 3)).Contains('лекарственного') -or (Text (Cell $matrix 7 11)) -ne 'номер'){throw 'В файле 1С не найдена структура отчёта МЗ РБ (заголовки строк 6–8).'}
  $date=Parse-Date (Cell $matrix 4 17)
@@ -341,6 +348,7 @@ function Set-BasisMatches($s,$basis){
  }
 }
 function Overlay-Fields($s,$group){
+ if($group.PSObject.Properties['AutoFields']){return @($group.AutoFields)}
  $categories=@($s.Events | Where-Object {$_.BlockId -eq $group.Id} | ForEach-Object {$_.Category})
  $fields=New-Object Collections.Generic.List[string]
  $map=@{Transfer=@('Transfer');Redistribution=@('Redistribution');Commission=@('Commission');Fx=@('Fx');Discount=@('Discount');Expenses=@('Conversion','Other');Other=@('Other');Vat=@('Other');Unknown=@('Other')}
@@ -350,6 +358,7 @@ function Overlay-Fields($s,$group){
  return $fields.ToArray()
 }
 function Merge-Basis($s,$basis){
+ if($s.Automatic){return Merge-AutomaticContracts $s $basis}
  $rows=New-Object Collections.Generic.List[object];$byRow=@{}
  foreach($r in $basis.Rows){$copy=[pscustomobject]@{Row=$r.Row;Values=[object[]]$r.Values.Clone();ParentRow=$r.ParentRow;IsRedistribution=$r.IsRedistribution};$rows.Add($copy);$byRow[[int]$r.Row]=$copy}
  $targets=@{};$changes=New-Object Collections.Generic.List[object];$skipped=New-Object Collections.Generic.List[object]
@@ -360,7 +369,9 @@ function Merge-Basis($s,$basis){
    if($row -lt 0){throw ('Договор '+$line.Contract+': выберите строку 1С для «'+$line.Name+'» или 0, чтобы не переносить сумму.')}
    if($row -gt 0){
     $main=@($basis.Main | Where-Object {$_.Row -eq $row})
-    if($main.Count -ne 1 -or (Contract-Key $main[0].Values[3]) -ne (Contract-Key $line.Contract)){throw ('Договор '+$line.Contract+': выбранная строка '+$row+' в 1С относится к другому договору или не является позицией.')}
+    $contractOK=$main.Count -eq 1 -and (Contract-Key $main[0].Values[3]) -eq (Contract-Key $line.Contract)
+
+    if(-not $contractOK){throw ('Договор '+$line.Contract+': выбранная строка '+$row+' в 1С относится к другому договору или не является позицией.')}
     $key='row:'+$row;$target=$byRow[$row]
    }else{$skipped.Add($line);continue}
    if(-not $targets.ContainsKey($key)){$targets[$key]=[pscustomobject]@{Target=$target;Amounts=@{}}}
@@ -396,10 +407,10 @@ function Analyze-Inputs([string]$source,[string]$sheet,[datetime]$period,[string
   $book=$excel.Workbooks.Open($basisPath,0,$true);$matrix=Read-Matrix $book.Worksheets.Item($basisSheet);$basis=Read-Basis $matrix $period;$book.Close($false);$book=$null
  }finally{if($null -ne $book){$book.Close($false)};Close-Excel $excel}
  if($sourceHash -ne (File-Sha256 $source) -or $basisHash -ne (File-Sha256 $basisPath)){throw 'Один из файлов изменился во время чтения. Повторите формирование.'}
- $s=Analyze-Matrix $raw $matrix $source $basisPath $sheet $period $false $true
+ $s=Analyze-Matrix $raw $matrix $source $basisPath $sheet $period $false $true $true
  foreach($p in @{BasisPath=$basisPath;BasisSheet=$basisSheet;SourceFileHash=$sourceHash;TemplateFileHash=$basisHash;BasisFileHash=$basisHash;EngineHash=(File-Sha256 (Join-Path $PSScriptRoot 'Core.ps1'))}.GetEnumerator()){$s | Add-Member NoteProperty $p.Key $p.Value -Force}
  $s | Add-Member NoteProperty BasisRows @($basis.Main | ForEach-Object {[pscustomobject]@{Row=$_.Row;Contract=$_.Values[3]}}) -Force
- Set-BasisMatches $s $basis;Save-Cache $s;return $s
+ Set-AutomaticBasisMatches $s $basis;Save-Cache $s;return $s
 }
 function Save-MergedReport($s,[string]$output,[bool]$final){
  $errors=@(Validate-Session $s $final);if($errors.Count){throw ($errors -join "`r`n")}
@@ -440,13 +451,115 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
   # Only the selected report sheet is exported, in a real XLS container even for XLSX input.
   [void]$ws.Copy();$result=$excel.ActiveWorkbook
   try{$result.CheckCompatibility=$false;$result.SaveAs($output,56)}finally{$result.Close($false)}
+  if($s.Automatic){$s | Add-Member NoteProperty AutomationNotes @($plan.Notes) -Force}
   $s | Add-Member NoteProperty ResultTotal $plan.Total -Force;$s | Add-Member NoteProperty ResultPositions $plan.PositionCount -Force
+  $s | Add-Member NoteProperty ResultChanges $plan.Changes.Count -Force
+  $s | Add-Member NoteProperty ResultNotes (@($s.AutomationNotes | Where-Object {$_.Relevant}).Count+@($s.Warnings).Count) -Force
   $auditDir=Join-Path $dir 'Проверки';[void][IO.Directory]::CreateDirectory($auditDir)
   $html=New-Object Text.StringBuilder
   [void]$html.Append("<!doctype html><meta charset='utf-8'><title>Проверка объединения</title><h1>Объединение отчёта $(Html $s.PeriodKey)</h1><p>Основа 1С: $(Html $s.BasisPath), вкладка $(Html $s.BasisSheet)<br>Расчёты: $(Html $s.Source), вкладка $(Html $s.Sheet)</p><p>Явный ноль заменяет значение. Отсутствующая категория сохраняет значение 1С. Учреждения не прибавляются повторно к ВСЕГО.</p><table border='1'><tr><th>Строка 1С</th><th>Договор</th><th>Препарат</th><th>Поле</th><th>Было</th><th>Стало</th></tr>")
-  $labels=@{Transfer='Отпуск';Redistribution='Перераспределение в отпуске';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы'}
-  foreach($c in $plan.Changes){[void]$html.Append("<tr><td>$($c.BasisRow)</td><td>$(Html $c.Contract)</td><td>$(Html $c.Name)</td><td>$(Html $labels[$c.Field])</td><td>$(Html $c.Before)</td><td>$(Html (Fixed $c.After))</td></tr>")};[void]$html.Append('</table><h2>Не перенесены по выбору пользователя</h2>');foreach($line in $plan.Skipped){[void]$html.Append("<p>$(Html $line.Contract) — $(Html $line.Name): $(Html (($script:Fields | ForEach-Object {$labels[$_]+': '+(Fixed $line.$_)}) -join '; '))</p>")};[void]$html.Append("<p>ВСЕГО: $(Html (Fixed $plan.Total))</p>")
+  $labels=@{Transfer='Отпуск';Redistribution='Перераспределение в отпуске';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы';Name='Наименование'}
+  foreach($c in $plan.Changes){[void]$html.Append("<tr><td>$($c.BasisRow)</td><td>$(Html $c.Contract)</td><td>$(Html $c.Name)</td><td>$(Html $labels[$c.Field])</td><td>$(Html $c.Before)</td><td>$(Html $(if($c.Field -eq 'Name'){$c.After}else{Fixed $c.After}))</td></tr>")};[void]$html.Append('</table><h2>Не перенесены: значения 1С сохранены</h2>');foreach($line in $plan.Skipped){[void]$html.Append("<p>$(Html $line.Contract) — $(Html $line.Name): $(Html (($script:Fields | ForEach-Object {$labels[$_]+': '+(Fixed $line.$_)}) -join '; '))</p>")};[void]$html.Append("<p>ВСЕГО: $(Html (Fixed $plan.Total))</p>")
+  [void]$html.Append('<h2>Замечания автоматического сопоставления</h2>');foreach($note in $s.AutomationNotes){[void]$html.Append("<p>Строка расчётов $($note.SourceRow), $(Html $note.Contract), $(Html $note.Name): $(Html $note.Reason)</p>")};foreach($warning in $s.Warnings){[void]$html.Append("<p>$(Html $warning)</p>")}
   [IO.File]::WriteAllText((Join-Path $auditDir ([IO.Path]::GetFileNameWithoutExtension($output)+'.html')),$html.ToString(),[Text.Encoding]::UTF8)
  }finally{if($null -ne $book){$book.Close($false)};Close-Excel $excel;if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp}}
  return $output
+}
+
+function Source-DateKey($value){$d=Parse-Date $value;if($null -eq $d){return ''};return $d.ToString('yyyy-MM-dd')}
+function Basis-ContractSets($basis){
+ $sets=[ordered]@{}
+ foreach($row in $basis.Main){
+  $contract=Contract-Key $row.Values[3]
+  $key=$contract+'|'+(Source-DateKey $row.Values[4])+'|'+(Normal $row.Values[2])
+  if(-not $sets.Contains($key)){$sets[$key]=[pscustomobject]@{Key=$key;Contract=$contract;Date=(Source-DateKey $row.Values[4]);Supplier=(Normal $row.Values[2]);Rows=(New-Object Collections.Generic.List[object])}}
+  $sets[$key].Rows.Add($row)
+ }
+ return @($sets.Values)
+}
+function Match-ContractSet($sets,$s,$group){
+ $candidates=@($sets | Where-Object {$_.Contract -eq (Contract-Key $group.Contract)})
+ if($candidates.Count -le 1){return $candidates}
+ $line=@($s.Lines | Where-Object {$_.Group -eq $group.Id})[0]
+ if($null -eq $line){$line=$group}
+ $date=Source-DateKey $line.ContractDate
+ if($date){$dated=@($candidates | Where-Object {$_.Date -eq $date});if($dated.Count){$candidates=$dated}}
+ if($candidates.Count -gt 1){
+  $supplier=Normal $line.Supplier
+  if($supplier){$named=@($candidates | Where-Object {$_.Supplier -and ($supplier.Contains($_.Supplier) -or $_.Supplier.Contains($supplier))});if($named.Count){$candidates=$named}}
+ }
+ return $candidates
+}
+function Set-AutomaticBasisMatches($s,$basis){
+ # Mapping and field allocation happen together against the current basis at export.
+ foreach($line in $s.Lines){$line | Add-Member NoteProperty BasisRow 0 -Force}
+ $s | Add-Member NoteProperty Automatic $true -Force
+ $s | Add-Member NoteProperty AutomationNotes @() -Force
+ $s | Add-Member NoteProperty ZeroMissingFields $true -Force
+}
+function Set-ContractValue($changes,$row,[int]$index,[string]$field,$value,$sourceRows){
+ if($field -eq 'Name'){$same=(Text $row.Values[$index]) -ceq (Text $value)}else{$same=(Money $row.Values[$index]) -eq (Money $value)}
+ if($same){return}
+ $changes.Add([pscustomobject]@{BasisRow=$row.Row;Contract=$row.Values[3];Name=$row.Values[1];Field=$field;Before=$row.Values[$index];After=$value;SourceRows=($sourceRows -join ', ')})
+ $row.Values[$index]=$value
+}
+function Merge-AutomaticContracts($s,$basis){
+ $rows=New-Object Collections.Generic.List[object];$byRow=@{}
+ foreach($r in $basis.Rows){$copy=[pscustomobject]@{Row=$r.Row;Values=[object[]]$r.Values.Clone();ParentRow=$r.ParentRow;IsRedistribution=$r.IsRedistribution};$rows.Add($copy);$byRow[[int]$r.Row]=$copy}
+ $sets=@(Basis-ContractSets $basis);$incoming=@{};$changes=New-Object Collections.Generic.List[object];$notes=New-Object Collections.Generic.List[object];$skipped=New-Object Collections.Generic.List[object]
+ $groups=New-Object Collections.Generic.List[object];foreach($g in $s.Groups){$groups.Add($g)}
+ if($s.ZeroMissingFields){
+  $activeIds=@($s.Groups | ForEach-Object {$_.Id})
+  foreach($contract in $s.AllContracts){if($contract.Id -notin $activeIds){$groups.Add([pscustomobject]@{Id=$contract.Id;Row=$contract.Row;Contract=$contract.Contract;ContractDate=$contract.ContractDate;Supplier=$contract.Supplier;Expected=@(0,0,0,0,0,0,0)})}}
+ }
+ foreach($g in $groups){
+  $match=@(Match-ContractSet $sets $s $g)
+  if($match.Count -ne 1){
+   $reason=if($match.Count -eq 0){'В 1С нет этого договора; новые позиции не добавлялись.'}else{'Номер договора повторяется у разных поставщиков/дат; значения 1С сохранены.'}
+   $notes.Add([pscustomobject]@{SourceRow=$g.Row;Contract=$g.Contract;Name='';Reason=$reason;Relevant=($match.Count -gt 1)})
+   foreach($line in @($s.Lines | Where-Object {$_.Group -eq $g.Id})){$skipped.Add($line)}
+   continue
+  }
+  $key=$match[0].Key
+  if(-not $incoming.ContainsKey($key)){$incoming[$key]=[pscustomobject]@{Amounts=@{};Groups=(New-Object Collections.Generic.List[object]);Fields=(New-Object Collections.Generic.List[string])}}
+  $incoming[$key].Groups.Add($g)
+  $fields=if($s.ZeroMissingFields){$script:Fields}else{@(Overlay-Fields $s $g)}
+  foreach($field in $fields){if(-not $incoming[$key].Fields.Contains($field)){$incoming[$key].Fields.Add($field)}}
+  for($i=0;$i -lt $script:Fields.Count;$i++){$f=$script:Fields[$i];if(-not $incoming[$key].Amounts.ContainsKey($f)){$incoming[$key].Amounts[$f]=[decimal]0};$incoming[$key].Amounts[$f]+=Money $g.Expected[$i]}
+ }
+ $indices=@{Transfer=5;Conversion=8;Fx=9;Commission=10;Discount=11;Other=12};$matched=0
+ # Output order and membership are driven exclusively by the 1C rows.
+ foreach($set in $sets){
+  if(-not $incoming.ContainsKey($set.Key)){continue};$matched++
+  $source=$incoming[$set.Key];$sources=@($source.Groups | ForEach-Object {$_.Row})
+  $members=@($set.Rows | ForEach-Object {$byRow[[int]$_.Row]})
+  $named=@($members | Where-Object {(Text $_.Values[1]) -ne ''})
+  $active=if($named.Count){$named}else{$members}
+  $primary=$active[0]
+  # A blank name may be completed from one unambiguous source name, without adding a row.
+  if($members.Count -eq 1 -and -not (Text $primary.Values[1])){
+   $ids=@($source.Groups | ForEach-Object {$_.Id});$names=@($s.Lines | Where-Object {$_.Group -in $ids -and $_.Name -ne 'Укажите наименование'} | ForEach-Object {$_.Name} | Select-Object -Unique)
+   if($names.Count -eq 1){Set-ContractValue $changes $primary 1 'Name' $names[0] $sources}
+  }
+  foreach($field in @('Transfer','Conversion','Fx','Commission','Discount','Other')){
+   if(-not $source.Fields.Contains($field)){continue}
+   $index=$indices[$field];$wanted=Money $source.Amounts[$field];$current=[decimal]0
+   foreach($member in $members){$current+=Money $member.Values[$index]}
+   if($current -eq $wanted -and $wanted -ne 0){continue} # Preserve a correct existing split across drugs.
+   if($active.Count -gt 1 -and $field -eq 'Transfer' -and $wanted -ne 0){
+    $notes.Add([pscustomobject]@{SourceRow=($sources -join ', ');Contract=$primary.Values[3];Name='';Reason='Общий отпуск договора не совпал с разбивкой 1С по препаратам. Разбивка сохранена; произвольное распределение не выполнялось.';Relevant=$true});continue
+   }
+   # Contract-level costs are recorded once in the first populated 1C position.
+   # Do not repeat the full contract amount for each drug.
+   foreach($member in $members){$value=if($member.Row -eq $primary.Row){$wanted}else{[decimal]0};Set-ContractValue $changes $member $index $field $value $sources}
+  }
+  if($source.Fields.Contains('Redistribution')){
+   $parentRows=@($members | ForEach-Object {$_.Row});$redis=@($rows | Where-Object {$_.IsRedistribution -and $_.ParentRow -in $parentRows})
+   $wanted=Money $source.Amounts['Redistribution']
+   if($redis.Count){$current=[decimal]0;foreach($r in $redis){$current+=Money $r.Values[5]};if($current -ne $wanted){for($i=0;$i -lt $redis.Count;$i++){Set-ContractValue $changes $redis[$i] 5 'Redistribution' $(if($i -eq 0){$wanted}else{[decimal]0}) $sources}}}
+   elseif($wanted -ne 0){Set-ContractValue $changes $primary 5 'Redistribution' ((Money $primary.Values[5])+$wanted) $sources}
+  }
+ }
+ $total=[decimal]0;foreach($r in $rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
+ return [pscustomobject]@{Rows=$rows;Changes=$changes;Skipped=$skipped;Notes=$notes;MatchedContracts=$matched;Total=$total;PositionCount=$basis.Main.Count}
 }
