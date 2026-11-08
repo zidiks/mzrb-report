@@ -29,9 +29,9 @@ powershell -NoProfile -STA -File scripts/Check.ps1
 При push в `main` и pull request GitHub Actions проверяет код и собирает ZIP. Для выпуска измените `app/Version.json`, сделайте commit и отправьте тег с той же версией:
 
 ```powershell
-git tag v1.0.1
+git tag v1.0.3
 git push origin main
-git push origin v1.0.1
+git push origin v1.0.3
 ```
 
 Сборка тега создаст GitHub Release с `mzrb-report.zip` и `SHA256SUMS.txt`. Для сборки и обновлений личные токены не нужны: публикация использует временный `GITHUB_TOKEN`, клиент читает публичные релизы.

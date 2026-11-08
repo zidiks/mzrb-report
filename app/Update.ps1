@@ -12,7 +12,10 @@ function Update-Hash([string]$path){
 }
 function GitHub-Uri([string]$url,[string]$hostName){
  $uri=[uri]$url
- if(-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $uri.Host -ne $hostName -or $uri.UserInfo -or -not $uri.AbsolutePath.StartsWith('/'+$script:ReleaseRepository+'/',[StringComparison]::Ordinal)){throw 'Недопустимый адрес обновления.'}
+ if(-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $uri.Host -ne $hostName -or $uri.UserInfo -or $uri.Query -or $uri.Fragment){throw 'Недопустимый адрес обновления.'}
+ if($hostName -eq 'api.github.com'){
+  if($uri.AbsolutePath -notmatch ('^/repos/'+[regex]::Escape($script:ReleaseRepository)+'/releases/assets/\d+$')){throw 'Недопустимый адрес пакета GitHub.'}
+ }elseif($hostName -ne 'github.com' -or -not $uri.AbsolutePath.StartsWith('/'+$script:ReleaseRepository+'/',[StringComparison]::Ordinal)){throw 'Недопустимый адрес обновления.'}
  return $uri
 }
 function Latest-Release([string]$root=$PSScriptRoot){
@@ -26,8 +29,10 @@ function Latest-Release([string]$root=$PSScriptRoot){
  if($assets.Count -ne 1 -or $assets[0].digest -notmatch '^sha256:([a-fA-F0-9]{64})$'){throw 'У релиза нет проверяемого пакета обновления.'}
  $hash=$matches[1].ToLowerInvariant();$asset=$assets[0]
  [void](GitHub-Uri $asset.browser_download_url 'github.com')
+ if($asset.id -le 0){throw 'Не найден идентификатор пакета GitHub.'}
+ $apiUrl='https://api.github.com/repos/'+$script:ReleaseRepository+'/releases/assets/'+[string]$asset.id
  if($asset.size -le 0 -or $asset.size -gt 10MB){throw 'Некорректный размер пакета обновления.'}
- return [pscustomobject]@{Available=$true;Version=$version.ToString();Url=$asset.browser_download_url;Sha256=$hash;Size=[long]$asset.size}
+ return [pscustomobject]@{Available=$true;Version=$version.ToString();Url=$asset.browser_download_url;ApiUrl=$apiUrl;Sha256=$hash;Size=[long]$asset.size}
 }
 function Expand-Update([string]$zipPath,[string]$destination,[string]$sha256,[string]$version){
  if($sha256 -notmatch '^[a-fA-F0-9]{64}$' -or (Update-Hash $zipPath) -cne $sha256.ToLowerInvariant()){throw 'Проверка целостности обновления не пройдена. Файлы программы не изменены.'}
@@ -50,15 +55,15 @@ function Expand-Update([string]$zipPath,[string]$destination,[string]$sha256,[st
 }
 function Download-Update($release){
  [void](GitHub-Uri $release.Url 'github.com')
+ [void](GitHub-Uri $release.ApiUrl 'api.github.com')
  $base=Join-Path ([IO.Path]::GetTempPath()) ('MzrbReport-'+[guid]::NewGuid().ToString('N'));[void][IO.Directory]::CreateDirectory($base)
- $zip=Join-Path $base 'package.zip';$client=New-Object Net.WebClient;$client.Headers['User-Agent']='MzrbReport'
- try{
-  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-  $client.DownloadFile($release.Url,$zip)
-  if((Get-Item -LiteralPath $zip).Length -ne $release.Size){throw 'Пакет скачан не полностью. Повторите попытку.'}
-  $stage=Expand-Update $zip (Join-Path $base 'app') $release.Sha256 $release.Version
-  return [pscustomobject]@{Stage=$stage;Zip=$zip;Sha256=$release.Sha256;Version=$release.Version}
- }finally{$client.Dispose()}
+ $zip=Join-Path $base 'package.zip'
+ [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+ try{Invoke-WebRequest -UseBasicParsing -Uri $release.ApiUrl -Headers @{'User-Agent'='MzrbReport';Accept='application/octet-stream'} -OutFile $zip -TimeoutSec 45 -ErrorAction Stop}
+ catch{Invoke-WebRequest -UseBasicParsing -Uri $release.Url -Headers @{'User-Agent'='MzrbReport'} -OutFile $zip -TimeoutSec 45 -ErrorAction Stop}
+ if((Get-Item -LiteralPath $zip).Length -ne $release.Size){throw 'Пакет скачан не полностью. Повторите попытку.'}
+ $stage=Expand-Update $zip (Join-Path $base 'app') $release.Sha256 $release.Version
+ return [pscustomobject]@{Stage=$stage;Zip=$zip;Sha256=$release.Sha256;Version=$release.Version}
 }
 function Apply-Package([string]$stage,[string]$target){
  $stage=[IO.Path]::GetFullPath($stage);$target=[IO.Path]::GetFullPath($target)

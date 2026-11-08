@@ -13,6 +13,9 @@ try{
  Assert (-not (Test-Path -LiteralPath (Join-Path $testRoot 'badHash'))) 'No writes before checksum verification'
  Reject {Expand-Update $zip (Join-Path $testRoot 'badVersion') $hash '99.0.0'} 'Wrong version rejected'
  foreach($url in @('http://github.com/zidiks/mzrb-report/releases/test','https://example.com/zidiks/mzrb-report/a','https://github.com/other/mzrb-report/a','https://github.com/zidiks/mzrb-report-evil/a')){Reject {GitHub-Uri $url 'github.com'} 'Untrusted release address rejected'}
+ Reject {GitHub-Uri 'https://api.github.com/repos/other/repo/releases/assets/1' 'api.github.com'} 'Foreign repository API rejected'
+ Reject {GitHub-Uri 'https://api.github.com/repos/zidiks/mzrb-report/releases/assets/1?redirect=evil' 'api.github.com'} 'Unexpected API query rejected'
+ Assert ((GitHub-Uri 'https://api.github.com/repos/zidiks/mzrb-report/releases/assets/1' 'api.github.com').Host -eq 'api.github.com') 'Exact release asset API accepted'
  $evil=Join-Path $testRoot 'evil.zip';$archive=[IO.Compression.ZipFile]::Open($evil,[IO.Compression.ZipArchiveMode]::Create)
  try{[void]$archive.CreateEntry('../outside.ps1')}finally{$archive.Dispose()}
  Reject {Expand-Update $evil (Join-Path $testRoot 'evil') (Update-Hash $evil) $version} 'Zip traversal rejected'
