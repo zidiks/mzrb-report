@@ -437,6 +437,7 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
     $v=$item.Values[$i];if((Text $v) -eq ''){continue}
     if($i -in @(5,7,8,9,10,11,12)){$ws.Cells.Item($row,$i+1).Formula=(Money $v).ToString('F2',$script:Invariant)}else{Set-ExcelText $ws $row ($i+1) $v}
    }
+   if($item.Row -le 0){$ws.Range("B${row}:E${row}").WrapText=$true;[void]$ws.Rows.Item($row).AutoFit()}
    $row++
   }
   $donor.Delete();$total=$row;$grand=$row+1
@@ -460,14 +461,17 @@ function Complete-MergedReport($s,$plan,[string]$output){
  $dir=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($output))
   if($s.Automatic){$s | Add-Member NoteProperty AutomationNotes @($plan.Notes | ForEach-Object {$_}) -Force}
   $s | Add-Member NoteProperty ResultTotal $plan.Total -Force;$s | Add-Member NoteProperty ResultPositions $plan.PositionCount -Force
+  $s | Add-Member NoteProperty ResultAddedContracts ([int]$plan.AddedContracts) -Force
   $s | Add-Member NoteProperty ResultChanges $plan.Changes.Count -Force
   $s | Add-Member NoteProperty ResultNotes (@($s.AutomationNotes | Where-Object {$_.Relevant}).Count+$s.Warnings.Count) -Force
   $auditDir=Join-Path $dir 'Проверки';[void][IO.Directory]::CreateDirectory($auditDir)
   $html=New-Object Text.StringBuilder
   $policyText=if($s.Automatic){'Для найденного договора используются рассчитанные суммы месяца, включая нули. Если договор не найден, его значения 1С сохранены.'}else{'Явный ноль заменяет значение. Отсутствующая категория сохраняет значение 1С.'}
   [void]$html.Append("<!doctype html><meta charset='utf-8'><title>Проверка объединения</title><h1>Объединение отчёта $(Html $s.PeriodKey)</h1><p>Основа 1С: $(Html $s.BasisPath), вкладка $(Html $s.BasisSheet)<br>Расчёты: $(Html $s.Source), вкладка $(Html $s.Sheet)</p><p>$(Html $policyText) Учреждения не прибавляются повторно к ВСЕГО.</p><table border='1'><tr><th>Строка 1С</th><th>Договор</th><th>Препарат</th><th>Поле</th><th>Было</th><th>Стало</th></tr>")
-  $labels=@{Transfer='Отпуск';Redistribution='Перераспределение в отпуске';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы';Name='Наименование'}
+  $labels=@{Transfer='Отпуск';Redistribution='Перераспределение (отдельная строка)';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы';Name='Наименование'}
   foreach($c in $plan.Changes){[void]$html.Append("<tr><td>$($c.BasisRow)</td><td>$(Html $c.Contract)</td><td>$(Html $c.Name)</td><td>$(Html $labels[$c.Field])</td><td>$(Html $c.Before)</td><td>$(Html $(if($c.Field -eq 'Name'){$c.After}else{Fixed $c.After}))</td></tr>")};[void]$html.Append('</table><h2>Не перенесены: значения 1С сохранены</h2>');foreach($line in $plan.Skipped){[void]$html.Append("<p>$(Html $line.Contract) — $(Html $line.Name): $(Html (($script:Fields | ForEach-Object {$labels[$_]+': '+(Fixed $line.$_)}) -join '; '))</p>")};[void]$html.Append("<p>ВСЕГО: $(Html (Fixed $plan.Total))</p>")
+  $removedCount=if($plan.PSObject.Properties['RemovedRows']){$plan.RemovedRows.Count}else{0}
+  [void]$html.Append('<h2>Очистка и нумерация</h2>');[void]$html.Append("<p>Добавлено договоров из расчётов: $($plan.AddedContracts). Удалено строк без данных: $removedCount. Позиции пронумерованы после всех изменений; учреждения и перераспределения номера не получают.</p>");foreach($r in $plan.RemovedRows){[void]$html.Append("<p>Удалена строка 1С $($r.BasisRow): $(Html $r.Contract), $(Html $r.Supplier), $(Html $r.Date).</p>")}
   [void]$html.Append('<h2>Замечания автоматического сопоставления</h2>');foreach($note in $s.AutomationNotes){[void]$html.Append("<p>Строка расчётов $($note.SourceRow), $(Html $note.Contract), $(Html $note.Name): $(Html $note.Reason)</p>")};foreach($warning in $s.Warnings){[void]$html.Append("<p>$(Html $warning)</p>")}
   [IO.File]::WriteAllText((Join-Path $auditDir ([IO.Path]::GetFileNameWithoutExtension($output)+'.html')),$html.ToString(),[Text.Encoding]::UTF8)
 }
@@ -510,9 +514,10 @@ function Set-ContractValue($changes,$row,[int]$index,[string]$field,$value,$sour
  $row.Values[$index]=$value
 }
 function Merge-AutomaticContracts($s,$basis){
- $rows=New-Object Collections.Generic.List[object];$byRow=@{}
- foreach($r in $basis.Rows){$copy=[pscustomobject]@{Row=$r.Row;Values=[object[]]$r.Values.Clone();ParentRow=$r.ParentRow;IsRedistribution=$r.IsRedistribution};$rows.Add($copy);$byRow[[int]$r.Row]=$copy}
- $sets=@(Basis-ContractSets $basis);$incoming=@{};$changes=New-Object Collections.Generic.List[object];$notes=New-Object Collections.Generic.List[object];$skipped=New-Object Collections.Generic.List[object]
+ $rows=New-Object Collections.Generic.List[object];$byRow=@{};$mainRows=@{}
+ foreach($m in $basis.Main){$mainRows[[int]$m.Row]=$true}
+ foreach($r in $basis.Rows){$copy=[pscustomobject]@{Row=$r.Row;Values=[object[]]$r.Values.Clone();ParentRow=$r.ParentRow;IsRedistribution=$r.IsRedistribution;IsMain=$mainRows.ContainsKey([int]$r.Row);Identity=('basis:'+$r.Row);ParentKey=$(if($r.ParentRow){'basis:'+$r.ParentRow}else{''})};$rows.Add($copy);$byRow[[int]$r.Row]=$copy}
+ $sets=@(Basis-ContractSets $basis);$addedSets=[ordered]@{};$incoming=@{};$changes=New-Object Collections.Generic.List[object];$notes=New-Object Collections.Generic.List[object];$skipped=New-Object Collections.Generic.List[object]
  $groups=New-Object Collections.Generic.List[object];foreach($g in $s.Groups){$groups.Add($g)}
  if($s.ZeroMissingFields){
   $activeIds=@($s.Groups | ForEach-Object {$_.Id})
@@ -520,8 +525,23 @@ function Merge-AutomaticContracts($s,$basis){
  }
  foreach($g in $groups){
   $match=@(Match-ContractSet $sets $s $g)
+  $hasAmounts=@($g.Expected | Where-Object {(Money $_) -ne 0}).Count -gt 0
+  if($match.Count -eq 0 -and $hasAmounts){
+   $sourceLines=@($s.Lines | Where-Object {$_.Group -eq $g.Id});$first=$sourceLines[0]
+   $date=Source-DateKey $first.ContractDate;$supplier=Normal $first.Supplier
+   $newKey=(Contract-Key $g.Contract)+'|'+$date+'|'+$supplier
+   if(-not $addedSets.Contains($newKey)){
+    $v=New-Object 'object[]' 13
+    $v[1]=(@($sourceLines | Where-Object {$_.Name -ne 'Укажите наименование'} | ForEach-Object {$_.Name} | Select-Object -Unique) -join '; ')
+    $v[2]=$first.Supplier;$v[3]=$g.Contract;$v[4]=$first.ContractDate
+    $new=[pscustomobject]@{Row=0;Values=$v;ParentRow=0;ParentKey='';Identity=('new:'+$newKey);IsRedistribution=$false;IsMain=$true}
+    $rows.Add($new)
+    $addedSets[$newKey]=[pscustomobject]@{Key=('new:'+$newKey);Contract=(Contract-Key $g.Contract);Date=$date;Supplier=$supplier;Rows=@($new)}
+   }
+   $match=@($addedSets[$newKey])
+  }
   if($match.Count -ne 1){
-   $reason=if($match.Count -eq 0){'В 1С нет этого договора; новые позиции не добавлялись.'}else{'Номер договора повторяется у разных поставщиков/дат; значения 1С сохранены.'}
+   $reason=if($match.Count -eq 0){'В 1С нет этого договора; за выбранный месяц нет ненулевых сумм.'}else{'Номер договора повторяется у разных поставщиков/дат; значения 1С сохранены.'}
    $notes.Add([pscustomobject]@{SourceRow=$g.Row;Contract=$g.Contract;Name='';Reason=$reason;Relevant=($match.Count -gt 1)})
    foreach($line in @($s.Lines | Where-Object {$_.Group -eq $g.Id})){$skipped.Add($line)}
    continue
@@ -534,11 +554,11 @@ function Merge-AutomaticContracts($s,$basis){
   for($i=0;$i -lt $script:Fields.Count;$i++){$f=$script:Fields[$i];if(-not $incoming[$key].Amounts.ContainsKey($f)){$incoming[$key].Amounts[$f]=[decimal]0};$incoming[$key].Amounts[$f]+=Money $g.Expected[$i]}
  }
  $indices=@{Transfer=5;Conversion=8;Fx=9;Commission=10;Discount=11;Other=12};$matched=0
- # Output order and membership are driven exclusively by the 1C rows.
- foreach($set in $sets){
+ # Preserve the 1C row order; append nonzero contracts missing from that book.
+ foreach($set in (@($sets)+@($addedSets.Values))){
   if(-not $incoming.ContainsKey($set.Key)){continue};$matched++
   $source=$incoming[$set.Key];$sources=@($source.Groups | ForEach-Object {$_.Row})
-  $members=@($set.Rows | ForEach-Object {$byRow[[int]$_.Row]})
+  $members=@($set.Rows | ForEach-Object {if($_.PSObject.Properties['IsMain']){$_}else{$byRow[[int]$_.Row]}})
   $named=@($members | Where-Object {(Text $_.Values[1]) -ne ''})
   $active=if($named.Count){$named}else{$members}
   $primary=$active[0]
@@ -559,13 +579,51 @@ function Merge-AutomaticContracts($s,$basis){
    # Do not repeat the full contract amount for each drug.
    foreach($member in $members){$value=if($member.Row -eq $primary.Row){$wanted}else{[decimal]0};Set-ContractValue $changes $member $index $field $value $sources}
   }
-  if($source.Fields.Contains('Redistribution')){
-   $parentRows=@($members | ForEach-Object {$_.Row});$redis=@($rows | Where-Object {$_.IsRedistribution -and $_.ParentRow -in $parentRows})
-   $wanted=Money $source.Amounts['Redistribution']
-   if($redis.Count){$current=[decimal]0;foreach($r in $redis){$current+=Money $r.Values[5]};if($current -ne $wanted){for($i=0;$i -lt $redis.Count;$i++){Set-ContractValue $changes $redis[$i] 5 'Redistribution' $(if($i -eq 0){$wanted}else{[decimal]0}) $sources}}}
-   elseif($wanted -ne 0){Set-ContractValue $changes $primary 5 'Redistribution' ((Money $primary.Values[5])+$wanted) $sources}
-  }
+  if($source.Fields.Contains('Redistribution')){Add-OutputRedistribution $rows $members $primary (Money $source.Amounts['Redistribution']) $changes $sources}
+
  }
- $total=[decimal]0;foreach($r in $rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
- return [pscustomobject]@{Rows=$rows.ToArray();Changes=$changes.ToArray();Skipped=$skipped.ToArray();Notes=$notes.ToArray();MatchedContracts=$matched;Total=$total;PositionCount=$basis.Main.Count}
+ $layout=Finalize-OutputRows $rows
+ $total=[decimal]0;foreach($r in $layout.Rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
+ return [pscustomobject]@{Rows=$layout.Rows;Changes=$changes.ToArray();Skipped=$skipped.ToArray();Notes=$notes.ToArray();MatchedContracts=$matched;Total=$total;PositionCount=$layout.PositionCount;RemovedRows=$layout.Removed;AddedContracts=$addedSets.Count}
+}
+
+function Has-OutputRowData($row){
+ if((Text $row.Values[1]) -ne ''){return $true}
+ $institution=Text $row.Values[6]
+ if($institution -ne '' -and $institution -notmatch '^[\s"''«»“”〃]+$'){return $true}
+ foreach($i in @(5,7,8,9,10,11,12)){if((Money $row.Values[$i]) -ne 0){return $true}}
+ return $false
+}
+function Finalize-OutputRows($rows){
+ $kept=New-Object Collections.Generic.List[object];$removed=New-Object Collections.Generic.List[object]
+ foreach($row in $rows){
+  $useful=Has-OutputRowData $row
+  if(-not $useful -and $row.IsMain){
+   $useful=@($rows | Where-Object {$_.ParentKey -eq $row.Identity -and (Has-OutputRowData $_)}).Count -gt 0
+  }
+  if($useful){$kept.Add($row)}else{$removed.Add([pscustomobject]@{BasisRow=$row.Row;Contract=$row.Values[3];Supplier=$row.Values[2];Date=$row.Values[4]})}
+ }
+ $number=0
+ foreach($row in $kept){if($row.IsMain -and -not $row.IsRedistribution){$number++;$row.Values[0]=[string]$number}else{$row.Values[0]=$null}}
+ return [pscustomobject]@{Rows=$kept.ToArray();Removed=$removed.ToArray();PositionCount=$number}
+}
+function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$changes,$sourceRows){
+ $parents=@($members | ForEach-Object {$_.Identity})
+ $existing=@($rows | Where-Object {$_.IsRedistribution -and $_.ParentKey -in $parents})
+ if(-not $existing.Count -and $amount -ne 0){
+  $v=New-Object 'object[]' 13;$v[4]='перераспр.';$v[5]=$amount
+  $new=[pscustomobject]@{Row=0;Values=$v;ParentRow=$primary.Row;ParentKey=$primary.Identity;Identity=('redis:'+ $primary.Identity);IsRedistribution=$true;IsMain=$false}
+  $rows.Insert($rows.IndexOf($primary)+1,$new)
+  $changes.Add([pscustomobject]@{BasisRow=$primary.Row;Contract=$primary.Values[3];Name=$primary.Values[1];Field='Redistribution';Before=[decimal]0;After=$amount;SourceRows=($sourceRows -join ', ')})
+  return
+ }
+ $current=[decimal]0;foreach($r in $existing){$current+=Money $r.Values[5]}
+ if($current -ne $amount -or $amount -eq 0){for($i=0;$i -lt $existing.Count;$i++){Set-ContractValue $changes $existing[$i] 5 'Redistribution' $(if($i -eq 0){$amount}else{[decimal]0}) $sourceRows}}
+ foreach($r in $existing){
+  $parent=@($members | Where-Object {$_.Identity -eq $r.ParentKey})[0]
+  if($null -eq $parent){continue}
+  [void]$rows.Remove($r);$index=$rows.IndexOf($parent)+1
+  while($index -lt $rows.Count -and $rows[$index].IsRedistribution -and $rows[$index].ParentKey -eq $parent.Identity){$index++}
+  $rows.Insert($index,$r)
+ }
 }

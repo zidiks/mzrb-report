@@ -75,7 +75,7 @@ function Start-Work([string]$operation,$payload,[string]$message,[scriptblock]$d
   switch($operation){
    'Sheets' {[pscustomobject]@{Data=@(Read-SheetNames $payload.Source)}}
    'Analyze' {$s=Analyze-Inputs $payload.Source $payload.Sheet $payload.Period $payload.Basis $payload.BasisSheet;[pscustomobject]@{Data=$s}}
-   'Save' {$path=Unique-Output $payload.Session $payload.Draft;$saved=Save-Report $payload.Session $path (-not $payload.Draft);Save-Cache $payload.Session;[pscustomobject]@{Data=$saved;Draft=$payload.Draft;Total=$payload.Session.ResultTotal;Positions=$payload.Session.ResultPositions;Notes=$payload.Session.ResultNotes;Changes=$payload.Session.ResultChanges}}
+   'Save' {$path=Unique-Output $payload.Session $payload.Draft;$saved=Save-Report $payload.Session $path (-not $payload.Draft);Save-Cache $payload.Session;[pscustomobject]@{Data=$saved;Draft=$payload.Draft;Total=$payload.Session.ResultTotal;Positions=$payload.Session.ResultPositions;Notes=$payload.Session.ResultNotes;Changes=$payload.Session.ResultChanges;Added=$payload.Session.ResultAddedContracts}}
    'UpdateCheck' {[pscustomobject]@{Data=(Latest-Release $root)}}
    'UpdateDownload' {[pscustomobject]@{Data=(Download-Update $payload.Release)}}
   }
@@ -147,12 +147,13 @@ function Show-Result([string]$path,[bool]$draft){
  $ResultDetails.Text=(Month-Display $script:PeriodDate)+' · '+$(if($script:Session.ResultPositions){$script:Session.ResultPositions}else{$script:Session.Lines.Count})+' позиций'+$(if($draft){' · требуется проверка'}else{''})
  $ResultFile.Text=[IO.Path]::GetFileName($path);$ResultFile.ToolTip=$path;$ResultTotal.Text=(Money-Display $(if($null -ne $script:Session.ResultTotal){$script:Session.ResultTotal}else{Session-Total $script:Session}))+' руб.'
  if($script:Session.Automatic){$ResultDetails.Text+=' · автоматически обновлено полей: '+$script:Session.ResultChanges}
+ if($script:Session.ResultAddedContracts -gt 0){$ResultDetails.Text+=' · добавлено договоров: '+$script:Session.ResultAddedContracts}
  if($script:Session.ResultNotes -gt 0){$ResultDetails.Text+=' · замечаний: '+$script:Session.ResultNotes+'. Подробности — в папке «Проверки».'}
  $DestinationHint.Text=if($draft){'Черновик можно проверить и исправить в Excel.'}else{'Выберите другую вкладку, чтобы сформировать следующий отчёт.'}
  Update-Action
  if($script:AutoOpen){Start-Process -FilePath $path}
 }
-function Begin-Save([bool]$draft){Start-Work 'Save' @{Session=$script:Session;Draft=$draft} 'Сохраняем отчёт в Excel…' {param($result);$script:Session | Add-Member NoteProperty ResultTotal $result.Total -Force;$script:Session | Add-Member NoteProperty ResultPositions $result.Positions -Force;$script:Session | Add-Member NoteProperty ResultNotes $result.Notes -Force;$script:Session | Add-Member NoteProperty ResultChanges $result.Changes -Force;Show-Result ([string]$result.Data) ([bool]$result.Draft)}}
+function Begin-Save([bool]$draft){Start-Work 'Save' @{Session=$script:Session;Draft=$draft} 'Сохраняем отчёт в Excel…' {param($result);$script:Session | Add-Member NoteProperty ResultTotal $result.Total -Force;$script:Session | Add-Member NoteProperty ResultPositions $result.Positions -Force;$script:Session | Add-Member NoteProperty ResultNotes $result.Notes -Force;$script:Session | Add-Member NoteProperty ResultChanges $result.Changes -Force;$script:Session | Add-Member NoteProperty ResultAddedContracts $result.Added -Force;Show-Result ([string]$result.Data) ([bool]$result.Draft)}}
 function Continue-Session {
  if(Needs-Review $script:Session){
   $decision=Show-Review

@@ -30,8 +30,8 @@ $raw.Values[5,7]='Дистриб.контр.';$b.Values[9,11]='ДИСТРИБЬ�
 $s=Auto $raw;$plan=Plan $s
 Assert ($plan.MatchedContracts -eq 1 -and $plan.Rows[0].Values[10] -eq 200) 'Distributor contract abbreviations match full 1C contract names'
 $raw.Values[5,7]='DIFFERENT-123';$s=Auto $raw;$plan=Plan $s
-Assert ($plan.MatchedContracts -eq 0 -and $plan.Rows[0].Values[10] -eq 50 -and $plan.Rows[0].Values[12] -eq 3) 'A contract absent from the ledger is preserved'
-Assert (-not (Needs-Review $s) -and $plan.Skipped.Count -gt 0) 'Unrelated source contracts never create mandatory tasks'
+Assert ($plan.AddedContracts -eq 1 -and $plan.Rows.Count -eq 3 -and $plan.Rows[0].Values[10] -eq 50 -and $plan.Rows[0].Values[12] -eq 3) 'Keep unmatched 1C data and append a missing ledger contract'
+Assert (-not (Needs-Review $s) -and $plan.Rows[2].Values[5] -eq 1500 -and $plan.Rows[2].Values[10] -eq 200 -and $plan.Rows[2].Values[7] -eq $null) 'Added contracts carry ledger values and leave institutions blank without a wizard'
 $raw.Values[5,7]='Дистриб.контр.';$raw.Values[5,23]=1600;$s=Auto $raw;$plan=Plan $s
 Assert ($plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq 500 -and @($plan.Notes | Where-Object {$_.Relevant}).Count -eq 1) 'Unknown drug-level shipment allocation is reported, not guessed'
 $raw.Values[5,23]=1500;$raw.Values[5,22]='Сентябрь';$raw.Values[6,22]='ком.возн.09';$s=Auto $raw;$plan=Plan $s
@@ -43,10 +43,10 @@ $s=Auto $raw;$plan=Plan $s
 Assert ($plan.Rows[0].Values[5] -eq 1500 -and $plan.Rows[1].Values[5] -eq 500) 'Use contract date to resolve a reused number'
 $raw.Values[6,7]='';$s=Auto $raw;$plan=Plan $s
 Assert ($plan.MatchedContracts -eq 0 -and $plan.Rows[0].Values[5] -eq 1000) 'Reused number without a unique date/supplier remains unchanged'
-# Full signed redistribution folds into an existing row, adding no positions.
+# Signed redistribution is a separate unnumbered row immediately after its parent.
 $b.Values[10,14]='01.01.2026';$raw.Values[6,7]='01.01.2026';$raw.Values[6,22]='Октябрь(перер.)';$raw.Values[6,23]=-25
 $s=Auto $raw;$plan=Plan $s
-Assert ($plan.Rows.Count -eq 2 -and $plan.Rows[0].Values[5] -eq 975 -and $plan.Rows[1].Values[5] -eq 500) 'Fold redistribution into a basis row without altering the remaining shipment split'
+Assert ($plan.Rows.Count -eq 3 -and $plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq -25 -and $plan.Rows[2].Values[5] -eq 500 -and -not $plan.Rows[1].Values[0]) 'Separate redistribution preserves original shipment split and is not numbered'
 $s.Lines[0].Transfer=1
 Assert (@(Validate-Session $s $true).Count -gt 0) 'Still reject a broken source total'
 "$script:Count automatic contract checks passed"

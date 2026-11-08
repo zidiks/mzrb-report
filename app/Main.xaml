@@ -50,7 +50,7 @@
       <Button x:Name="ChooseBasis" Grid.Column="1" Content="Выбрать файл 1С"/>
      </Grid>
      <ComboBox x:Name="BasisSheets" IsEnabled="False" Margin="0,10,0,0" AutomationProperties.Name="Вкладка отчёта 1С"/>
-     <TextBlock Text="Строки и учреждения — из 1С. Суммы подбираются по договору автоматически, включая рассчитанные нули." TextWrapping="Wrap" FontSize="12" Foreground="#61766F" Margin="0,8,0,0"/>
+     <TextBlock Text="Основа — 1С. Недостающие договоры добавляются из расчётов. Учреждения у новых позиций заполняются вручную." TextWrapping="Wrap" FontSize="12" Foreground="#61766F" Margin="0,8,0,0"/>
     </StackPanel>
    </Border>
    <Border Grid.Row="2" Style="{StaticResource Card}" x:Name="FileCard" AllowDrop="True" Margin="0,0,0,14">
