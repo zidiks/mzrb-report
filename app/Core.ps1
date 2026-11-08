@@ -36,11 +36,12 @@ function New-Excel {
 # Only the bundled layout (or its output copy) may be repaired. Never repair a user's source.
 function Open-Layout($excel,[string]$path,[bool]$readOnly=$true){
  try{return $excel.Workbooks.Open($path,0,$readOnly)}catch{
+  $normalError=$_.Exception.Message
   $missing=[Type]::Missing
   try{
    # CorruptLoad=xlRepairFile (1), supported by Excel 2010. Keep Office validation enabled.
    return $excel.Workbooks.Open($path,0,$readOnly,$missing,$missing,$missing,$true,$missing,$missing,$false,$false,$missing,$false,$true,1)
-  }catch{throw ('Excel не смог открыть встроенный шаблон отчёта «'+[IO.Path]::GetFileName($path)+'», в том числе в режиме восстановления. Исходный файл не изменён. '+$_.Exception.Message)}
+  }catch{throw ('Excel не смог открыть встроенный шаблон отчёта «'+[IO.Path]::GetFileName($path)+'» (Excel '+$excel.Version+'). Исходный файл не изменён. Обычное открытие: '+$normalError+'. Восстановление: '+$_.Exception.Message)}
  }
 }
 function Close-Excel($excel){if($null -ne $excel){try{$excel.Quit()}finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($excel);[GC]::Collect();[GC]::WaitForPendingFinalizers()}}}
