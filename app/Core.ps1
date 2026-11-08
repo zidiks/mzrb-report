@@ -33,6 +33,16 @@ function New-Excel {
  $e.Visible=$false;$e.DisplayAlerts=$false;$e.AutomationSecurity=3;$e.AskToUpdateLinks=$false
  return $e
 }
+# Only the bundled layout (or its output copy) may be repaired. Never repair a user's source.
+function Open-Layout($excel,[string]$path,[bool]$readOnly=$true){
+ try{return $excel.Workbooks.Open($path,0,$readOnly)}catch{
+  $missing=[Type]::Missing
+  try{
+   # CorruptLoad=xlRepairFile (1), supported by Excel 2010. Keep Office validation enabled.
+   return $excel.Workbooks.Open($path,0,$readOnly,$missing,$missing,$missing,$true,$missing,$missing,$false,$false,$missing,$false,$true,1)
+  }catch{throw ('Excel не смог открыть встроенный шаблон отчёта «'+[IO.Path]::GetFileName($path)+'», в том числе в режиме восстановления. Исходный файл не изменён. '+$_.Exception.Message)}
+ }
+}
 function Close-Excel($excel){if($null -ne $excel){try{$excel.Quit()}finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($excel);[GC]::Collect();[GC]::WaitForPendingFinalizers()}}}
 function Read-Matrix($sheet){$used=$sheet.UsedRange;return @{Values=$used.Value2;FirstRow=[int]$used.Row;FirstColumn=[int]$used.Column;LastRow=[int]$used.Row+[int]$used.Rows.Count-1;LastColumn=[int]$used.Column+[int]$used.Columns.Count-1}}
 function Cell($matrix,[int]$row,[int]$col){if($row -lt $matrix.FirstRow -or $row -gt $matrix.LastRow -or $col -lt $matrix.FirstColumn -or $col -gt $matrix.LastColumn){return $null};return $matrix.Values[($row-$matrix.FirstRow+1),($col-$matrix.FirstColumn+1)]}
@@ -166,7 +176,7 @@ function Analyze-Files([string]$source,[string]$template,[string]$sheet,[datetim
  $excel=$null;$book=$null
  try{
   $excel=New-Excel;$book=$excel.Workbooks.Open($source,0,$true);$raw=Read-Matrix $book.Worksheets.Item($sheet);$book.Close($false);$book=$null
-  $book=$excel.Workbooks.Open($template,0,$true);$templ=Read-Matrix $book.Worksheets.Item(1);$book.Close($false);$book=$null
+  $book=Open-Layout $excel $template $true;$templ=Read-Matrix $book.Worksheets.Item(1);$book.Close($false);$book=$null
  }finally{if($null -ne $book){$book.Close($false)};Close-Excel $excel}
  $s=Analyze-Matrix $raw $templ $source $template $sheet $period $useReference
  $s | Add-Member -NotePropertyName SourceFileHash -NotePropertyValue (File-Sha256 $source)
@@ -224,7 +234,7 @@ function Save-Report($s,[string]$output,[bool]$final=$false){
  $temp=Join-Path $dir ('.report_'+[guid]::NewGuid().ToString('N')+[IO.Path]::GetExtension($output));Copy-Item -LiteralPath $s.Template -Destination $temp
  $e=$null;$book=$null
  try{
-  $e=New-Excel;$book=$e.Workbooks.Open($temp,0,$false);$ws=$book.Worksheets.Item(1);$raw=Read-Matrix $ws
+  $e=New-Excel;$book=Open-Layout $e $temp $false;$ws=$book.Worksheets.Item(1);$raw=Read-Matrix $ws
   if(-not (Text (Cell $raw 6 3)).Contains('лекарственного')){throw 'Изменена структура образца.'}
   $oldGrand=0;for($r=9;$r -le $raw.LastRow;$r++){if((Text (Cell $raw $r 14)).Replace(' ','') -eq 'ВСЕГО:'){$oldGrand=$r;break}}
   if($oldGrand -lt 10){throw 'В образце не найдена строка ВСЕГО.'}

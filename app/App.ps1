@@ -25,6 +25,16 @@ Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Data
 $script:SourcePath='';$script:Session=$null;$script:Job=$null;$script:ResultPath='';$script:PeriodDate=$null;$script:Loading=$false;$script:AutoOpen=$Mode -eq 'UI';$script:LastError='';$script:ReviewWindow=$null
 function Load-Xaml([string]$file){$xml=[xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw -Encoding UTF8);$reader=New-Object Xml.XmlNodeReader $xml;try{return [Windows.Markup.XamlReader]::Load($reader)}finally{$reader.Close()}}
+function Fit-Window($target,[double]$availableWidth=0,[double]$availableHeight=0){
+ # WPF work-area dimensions are device-independent and already account for Windows scaling.
+ if($availableWidth -le 0){$availableWidth=[Windows.SystemParameters]::WorkArea.Width}
+ if($availableHeight -le 0){$availableHeight=[Windows.SystemParameters]::WorkArea.Height}
+ $target.MinWidth=[Math]::Min($target.MinWidth,$availableWidth)
+ $target.MinHeight=[Math]::Min($target.MinHeight,$availableHeight)
+ $target.MaxWidth=$availableWidth;$target.MaxHeight=$availableHeight
+ $target.Width=[Math]::Min($target.Width,$availableWidth)
+ $target.Height=[Math]::Min($target.Height,$availableHeight)
+}
 function Money-Display($v){return (Money $v).ToString('N2',$script:Ru)}
 function Month-Display([datetime]$date){$text=$date.ToString('MMMM yyyy',$script:Ru);return $script:Ru.TextInfo.ToTitleCase($text)}
 function Set-Visible($control,[bool]$value){$control.Visibility=if($value){'Visible'}else{'Collapsed'}}
@@ -186,10 +196,10 @@ function Confirm-ReviewPage {
 }
 function Show-Review {
  $script:Decision='Cancel';$script:ReviewGroups=@(Pending-Groups $script:Session);$script:HasWarningPage=$script:Session.Warnings.Count -gt 0 -and -not $script:Session.Confirmed;$script:ReviewPage=0
- $script:ReviewWindow=Load-Xaml 'Review.xaml';$script:ReviewWindow.Owner=$window;$script:ReviewWindow.Icon=$window.Icon;[void]$script:ReviewWindow.Resources.MergedDictionaries.Add($window.Resources)
+ $script:ReviewWindow=Load-Xaml 'Review.xaml';Fit-Window $script:ReviewWindow;$script:ReviewWindow.Owner=$window;$script:ReviewWindow.Icon=$window.Icon;[void]$script:ReviewWindow.Resources.MergedDictionaries.Add($window.Resources)
  foreach($name in @('ReviewProgress','ContractTitle','ContractHelp','ContractDatePanel','ContractDate','TableHeading','ReviewGrid','WarningPage','UndatedRows','WarningsConfirmed','Balance','ReviewError','SourceExpander','Explanation','SourceRows','ReviewBack','ReviewCancel','SaveDraft','ReviewNext','AddDrug')){Set-Variable -Scope Script -Name $name -Value $script:ReviewWindow.FindName($name)}
  $titles=@{Name='Лекарственное средство';Transfer='Отпуск';Redistribution='Перераспр.';Conversion='Покупка валюты';Fx='Курс. разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие'}
- foreach($field in @('Name')+$script:Fields){$col=New-Object Windows.Controls.DataGridTextColumn;$col.Header=$titles[$field];$col.Width=if($field -eq 'Name'){230}else{115};$binding=New-Object Windows.Data.Binding($field);$binding.UpdateSourceTrigger='PropertyChanged';$binding.ValidatesOnExceptions=$true;$binding.ConverterCulture=$script:Ru;if($field -ne 'Name'){$binding.StringFormat='N2'};$col.Binding=$binding;[void]$ReviewGrid.Columns.Add($col)}
+ foreach($field in @('Name')+$script:Fields){$col=New-Object Windows.Controls.DataGridTextColumn;$col.Header=$titles[$field];$col.Width=if($field -eq 'Name'){210}else{100};$binding=New-Object Windows.Data.Binding($field);$binding.UpdateSourceTrigger='PropertyChanged';$binding.ValidatesOnExceptions=$true;$binding.ConverterCulture=$script:Ru;if($field -ne 'Name'){$binding.StringFormat='N2'};$col.Binding=$binding;[void]$ReviewGrid.Columns.Add($col)}
  $ReviewNext.Add_Click({Confirm-ReviewPage});$ReviewCancel.Add_Click({try{Commit-Review}catch{};$script:ReviewWindow.Close()})
  $ReviewBack.Add_Click({try{Commit-Review;if($script:ReviewPage -gt 0){$script:ReviewPage--;Show-ReviewPage}}catch{$ReviewError.Text=$_.Exception.Message}})
  $SaveDraft.Add_Click({try{Commit-Review;$errors=@(Validate-Session $script:Session $false);if($errors.Count){throw 'Суммы позиций пока не совпадают с исходником. Исправьте распределение, чтобы сохранить черновик.'};Save-Cache $script:Session;$script:Decision='Draft';$script:ReviewWindow.Close()}catch{$ReviewError.Text=$_.Exception.Message}})
@@ -212,7 +222,7 @@ function Pump-Work([int]$seconds=55){
  if($script:LastError){throw $script:LastError}
 }
 try{
- $window=Load-Xaml 'Main.xaml';$icon=Join-Path $PSScriptRoot 'Data\Report.ico';if(Test-Path -LiteralPath $icon){$window.Icon=[Windows.Media.Imaging.BitmapFrame]::Create([uri]$icon)}
+ $window=Load-Xaml 'Main.xaml';Fit-Window $window;$icon=Join-Path $PSScriptRoot 'Data\Report.ico';if(Test-Path -LiteralPath $icon){$window.Icon=[Windows.Media.Imaging.BitmapFrame]::Create([uri]$icon)}
  foreach($name in @('FileCard','FileName','FileLocation','ChooseFile','Sheets','ReportMonth','ManualPeriodPanel','ManualPeriod','ProgressPanel','ProgressText','MessagePanel','MessageTitle','MessageBody','ResultPanel','ResultTitle','ResultDetails','ResultFile','ResultTotal','Generate','DestinationHint','OpenFolder','ResetReport','CheckUpdates','VersionLabel','UpdateStatus')){Set-Variable -Scope Script -Name $name -Value $window.FindName($name)}
  $VersionLabel.Text='Версия '+(App-Version).ToString();$CheckUpdates.Add_Click({try{Check-AppUpdates}catch{Log-Error $_;$UpdateStatus.Text='Не удалось установить обновление. Повторите попытку.'}})
  if($UpdatedFrom -eq 'GitHub'){$UpdateStatus.Text='Обновление установлено'}

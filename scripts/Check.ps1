@@ -15,6 +15,8 @@ foreach($name in @('Main.xaml','Review.xaml')){
  try{[void][Windows.Markup.XamlReader]::Load($reader)}finally{$reader.Close()}
 }
 & (Join-Path $root 'tests\Core.Tests.ps1')
+& (Join-Path $root 'tests\Layout.Tests.ps1')
+& (Join-Path $root 'tests\Window.Tests.ps1')
 & (Join-Path $PSScriptRoot 'Build.ps1')
 & (Join-Path $root 'tests\Update.Tests.ps1')
 Write-Output 'All checks passed'
