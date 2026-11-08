@@ -327,7 +327,7 @@ function Read-Basis($matrix,[datetime]$period){
  }
  foreach($item in $rows){if((Normal $item.Values[0]) -eq 'итого' -or (Normal $item.Values[4]) -eq 'итого') {throw 'Внутри данных 1С найдены промежуточные итоги. Нужна отдельная проверка структуры, чтобы не сложить суммы дважды.'}}
  if($main.Count -eq 0){throw 'В отчёте 1С не найдены строки договоров.'}
- return [pscustomobject]@{Rows=$rows;Main=$main;TotalRow=$grand-1;GrandRow=$grand}
+ return [pscustomobject]@{Rows=$rows.ToArray();Main=$main.ToArray();TotalRow=$grand-1;GrandRow=$grand}
 }
 function Set-BasisMatches($s,$basis){
  foreach($line in $s.Lines){
@@ -394,7 +394,7 @@ function Merge-Basis($s,$basis){
   }
  }
  $total=[decimal]0;foreach($r in $rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
- return [pscustomobject]@{Rows=$rows;Total=$total;Changes=$changes;Skipped=$skipped;PositionCount=@($rows | Where-Object {(Text $_.Values[0]) -ne ''}).Count}
+ return [pscustomobject]@{Rows=$rows.ToArray();Total=$total;Changes=$changes.ToArray();Skipped=$skipped.ToArray();PositionCount=@($rows | Where-Object {(Text $_.Values[0]) -ne ''}).Count}
 }
 function Analyze-Inputs([string]$source,[string]$sheet,[datetime]$period,[string]$basisPath,[string]$basisSheet,[bool]$fresh=$false){
  $source=[IO.Path]::GetFullPath($source);$basisPath=[IO.Path]::GetFullPath($basisPath)
@@ -451,19 +451,25 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
   # Only the selected report sheet is exported, in a real XLS container even for XLSX input.
   [void]$ws.Copy();$result=$excel.ActiveWorkbook
   try{$result.CheckCompatibility=$false;$result.SaveAs($output,56)}finally{$result.Close($false)}
-  if($s.Automatic){$s | Add-Member NoteProperty AutomationNotes @($plan.Notes) -Force}
+  Complete-MergedReport $s $plan $output
+ }finally{if($null -ne $book){$book.Close($false)};Close-Excel $excel;if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp}}
+ return $output
+}
+
+function Complete-MergedReport($s,$plan,[string]$output){
+ $dir=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($output))
+  if($s.Automatic){$s | Add-Member NoteProperty AutomationNotes @($plan.Notes | ForEach-Object {$_}) -Force}
   $s | Add-Member NoteProperty ResultTotal $plan.Total -Force;$s | Add-Member NoteProperty ResultPositions $plan.PositionCount -Force
   $s | Add-Member NoteProperty ResultChanges $plan.Changes.Count -Force
-  $s | Add-Member NoteProperty ResultNotes (@($s.AutomationNotes | Where-Object {$_.Relevant}).Count+@($s.Warnings).Count) -Force
+  $s | Add-Member NoteProperty ResultNotes (@($s.AutomationNotes | Where-Object {$_.Relevant}).Count+$s.Warnings.Count) -Force
   $auditDir=Join-Path $dir 'Проверки';[void][IO.Directory]::CreateDirectory($auditDir)
   $html=New-Object Text.StringBuilder
-  [void]$html.Append("<!doctype html><meta charset='utf-8'><title>Проверка объединения</title><h1>Объединение отчёта $(Html $s.PeriodKey)</h1><p>Основа 1С: $(Html $s.BasisPath), вкладка $(Html $s.BasisSheet)<br>Расчёты: $(Html $s.Source), вкладка $(Html $s.Sheet)</p><p>Явный ноль заменяет значение. Отсутствующая категория сохраняет значение 1С. Учреждения не прибавляются повторно к ВСЕГО.</p><table border='1'><tr><th>Строка 1С</th><th>Договор</th><th>Препарат</th><th>Поле</th><th>Было</th><th>Стало</th></tr>")
+  $policyText=if($s.Automatic){'Для найденного договора используются рассчитанные суммы месяца, включая нули. Если договор не найден, его значения 1С сохранены.'}else{'Явный ноль заменяет значение. Отсутствующая категория сохраняет значение 1С.'}
+  [void]$html.Append("<!doctype html><meta charset='utf-8'><title>Проверка объединения</title><h1>Объединение отчёта $(Html $s.PeriodKey)</h1><p>Основа 1С: $(Html $s.BasisPath), вкладка $(Html $s.BasisSheet)<br>Расчёты: $(Html $s.Source), вкладка $(Html $s.Sheet)</p><p>$(Html $policyText) Учреждения не прибавляются повторно к ВСЕГО.</p><table border='1'><tr><th>Строка 1С</th><th>Договор</th><th>Препарат</th><th>Поле</th><th>Было</th><th>Стало</th></tr>")
   $labels=@{Transfer='Отпуск';Redistribution='Перераспределение в отпуске';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы';Name='Наименование'}
   foreach($c in $plan.Changes){[void]$html.Append("<tr><td>$($c.BasisRow)</td><td>$(Html $c.Contract)</td><td>$(Html $c.Name)</td><td>$(Html $labels[$c.Field])</td><td>$(Html $c.Before)</td><td>$(Html $(if($c.Field -eq 'Name'){$c.After}else{Fixed $c.After}))</td></tr>")};[void]$html.Append('</table><h2>Не перенесены: значения 1С сохранены</h2>');foreach($line in $plan.Skipped){[void]$html.Append("<p>$(Html $line.Contract) — $(Html $line.Name): $(Html (($script:Fields | ForEach-Object {$labels[$_]+': '+(Fixed $line.$_)}) -join '; '))</p>")};[void]$html.Append("<p>ВСЕГО: $(Html (Fixed $plan.Total))</p>")
   [void]$html.Append('<h2>Замечания автоматического сопоставления</h2>');foreach($note in $s.AutomationNotes){[void]$html.Append("<p>Строка расчётов $($note.SourceRow), $(Html $note.Contract), $(Html $note.Name): $(Html $note.Reason)</p>")};foreach($warning in $s.Warnings){[void]$html.Append("<p>$(Html $warning)</p>")}
   [IO.File]::WriteAllText((Join-Path $auditDir ([IO.Path]::GetFileNameWithoutExtension($output)+'.html')),$html.ToString(),[Text.Encoding]::UTF8)
- }finally{if($null -ne $book){$book.Close($false)};Close-Excel $excel;if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp}}
- return $output
 }
 
 function Source-DateKey($value){$d=Parse-Date $value;if($null -eq $d){return ''};return $d.ToString('yyyy-MM-dd')}
@@ -561,5 +567,5 @@ function Merge-AutomaticContracts($s,$basis){
   }
  }
  $total=[decimal]0;foreach($r in $rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
- return [pscustomobject]@{Rows=$rows;Changes=$changes;Skipped=$skipped;Notes=$notes;MatchedContracts=$matched;Total=$total;PositionCount=$basis.Main.Count}
+ return [pscustomobject]@{Rows=$rows.ToArray();Changes=$changes.ToArray();Skipped=$skipped.ToArray();Notes=$notes.ToArray();MatchedContracts=$matched;Total=$total;PositionCount=$basis.Main.Count}
 }

@@ -13,6 +13,7 @@ function Auto($raw){$s=Analyze-Matrix $raw $b 'source.xlsx' 'basis.xls' '01.11.2
 function Plan($s){return Merge-Basis $s (Read-Basis $b ([datetime]'2026-10-01'))}
 $raw=Matrix;Put $raw 1 @(22,'Отпущено ЛПУ');Put $raw 5 @(1,1,7,'DEL-2026',8,'Компания',9,'Название из расчётов',22,'Октябрь',23,1500);Put $raw 6 @(7,'01.01.2026',22,'ком.возн.10',23,200);Put $raw 7 @(1,'Итого')
 $s=Auto $raw;$plan=Plan $s
+Assert ($plan.Rows -is [object[]] -and $plan.Changes -is [object[]] -and $plan.Notes -is [object[]] -and @($plan.Notes).Count -eq $plan.Notes.Count) 'Public plan collections can be consumed as arrays without binder errors'
 Assert ($s.Lines.Count -eq 1) 'Do not invent source drugs from all basis names'
 Assert ($plan.MatchedContracts -eq 1 -and $plan.PositionCount -eq 2 -and $plan.Rows.Count -eq 2) 'Contract matching preserves basis membership'
 Assert ($plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq 500) 'Preserve matching per-drug shipment split'
