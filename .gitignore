@@ -1,0 +1,14 @@
+# Private source workbooks, financial profiles and user state never belong in Git.
+*.xls
+*.xlsx
+*.xlsm
+!app/Data/Layout.xls
+**/Data/*
+!app/Data/Layout.xls
+!app/Data/Report.ico
+dist/
+TestResults/
+*.log
+*.zip
+.vs/
+.idea/
