@@ -46,8 +46,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TITLE: Отчёт МЗ РБ
+          RELEASE_NOTES: Готовая программа для Windows. Скачайте mzrb-report.zip, распакуйте и запустите Установить.cmd. В установленной программе используйте кнопку «Проверить обновления». Нужен Microsoft Excel.
         run: |
-          gh release create $env:RELEASE_TAG --verify-tag --draft --title "Отчёт МЗ РБ $env:RELEASE_TAG" --notes "Готовая программа для Windows. Скачайте mzrb-report.zip, распакуйте и запустите Установить.cmd. В установленной программе используйте кнопку «Проверить обновления». Нужен Microsoft Excel."
+          gh release create $env:RELEASE_TAG --verify-tag --draft --title "$env:RELEASE_TITLE $env:RELEASE_TAG" --notes $env:RELEASE_NOTES
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
           gh release upload $env:RELEASE_TAG dist/mzrb-report.zip dist/SHA256SUMS.txt
           if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
