@@ -1,6 +1,6 @@
 ﻿param(
  [ValidateSet('UI','Preview','Build')][string]$Mode='UI',
- [string]$Source,[string]$Sheet,[string]$Period,[string]$Output,[string]$PreviewPath,
+ [string]$Basis,[string]$BasisSheet,[string]$Source,[string]$Sheet,[string]$Period,[string]$Output,[string]$PreviewPath,
  [ValidateSet('Input','Done','Review','Busy','Error')][string]$Screen='Input',
  [string]$UpdatedFrom
 )
@@ -13,17 +13,18 @@ $script:Ru=[Globalization.CultureInfo]::GetCultureInfo('ru-RU')
 [Threading.Thread]::CurrentThread.CurrentUICulture=$script:Ru
 if($Mode -eq 'Build'){
  $date=if($Period){[datetime]::ParseExact($Period,'yyyy-MM',$script:Invariant)}else{Sheet-Period $Sheet}
- $s=Analyze-BuiltIn $Source $Sheet $date $true
+ if(-not $Basis -or -not $BasisSheet){throw 'Укажите -Basis (отчёт 1С) и -BasisSheet (вкладка 1С).'}
+ $s=Analyze-Inputs $Source $Sheet $date $Basis $BasisSheet $true
  if(-not $Output){$Output=Unique-Output $s (Needs-Review $s)}
  $path=Save-Report $s $Output (-not (Needs-Review $s))
- [pscustomobject]@{Output=$path;Reference=($null -ne $s.Reference);Groups=$s.Groups.Count;Lines=$s.Lines.Count;Total=(Session-Total $s);NeedsReview=(Needs-Review $s)} | ConvertTo-Json
+ [pscustomobject]@{Output=$path;Reference=($null -ne $s.Reference);Groups=$s.Groups.Count;Lines=$s.Lines.Count;Total=$s.ResultTotal;NeedsReview=(Needs-Review $s)} | ConvertTo-Json
  exit 0
 }
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Data
-$script:SourcePath='';$script:Session=$null;$script:Job=$null;$script:ResultPath='';$script:PeriodDate=$null;$script:Loading=$false;$script:AutoOpen=$Mode -eq 'UI';$script:LastError='';$script:ReviewWindow=$null
+$script:BasisPath='';$script:SourcePath='';$script:Session=$null;$script:Job=$null;$script:ResultPath='';$script:PeriodDate=$null;$script:Loading=$false;$script:AutoOpen=$Mode -eq 'UI';$script:LastError='';$script:ReviewWindow=$null
 function Load-Xaml([string]$file){$xml=[xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw -Encoding UTF8);$reader=New-Object Xml.XmlNodeReader $xml;try{return [Windows.Markup.XamlReader]::Load($reader)}finally{$reader.Close()}}
 function Fit-Window($target,[double]$availableWidth=0,[double]$availableHeight=0){
  # WPF work-area dimensions are device-independent and already account for Windows scaling.
@@ -49,15 +50,16 @@ function Show-Error($record){
  $Generate.Content='Попробовать ещё раз';Update-Action
 }
 function Save-Settings {
- try{[ordered]@{Source=$script:SourcePath;Sheet=[string]$Sheets.SelectedItem} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'Data\Settings.json') -Encoding UTF8}catch{}
+ try{[ordered]@{Source=$script:SourcePath;Sheet=[string]$Sheets.SelectedItem;Basis=$script:BasisPath;BasisSheet=[string]$BasisSheets.SelectedItem} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'Data\Settings.json') -Encoding UTF8}catch{}
 }
 function Update-Action {
  $busy=$null -ne $script:Job;$ChooseFile.IsEnabled=-not $busy;$Sheets.IsEnabled=-not $busy -and $Sheets.Items.Count -gt 0;$ManualPeriod.IsEnabled=-not $busy;$ResetReport.IsEnabled=-not $busy
- $Generate.IsEnabled=-not $busy -and $script:SourcePath -ne '' -and $null -ne $script:PeriodDate -and $null -ne $Sheets.SelectedItem
+ $ChooseBasis.IsEnabled=-not $busy;$BasisSheets.IsEnabled=-not $busy -and $BasisSheets.Items.Count -gt 0
+ $Generate.IsEnabled=$script:BasisPath -ne '' -and $null -ne $BasisSheets.SelectedItem -and -not $busy -and $script:SourcePath -ne '' -and $null -ne $script:PeriodDate -and $null -ne $Sheets.SelectedItem
  $CheckUpdates.IsEnabled=-not $busy
  if($busy){$Generate.Content='Формируем отчёт…'}elseif($script:ResultPath){$Generate.Content='Открыть отчёт'}elseif($null -ne $script:Session -and (Needs-Review $script:Session)){$Generate.Content='Продолжить проверку'}elseif($script:LastError){$Generate.Content='Попробовать ещё раз'}else{$Generate.Content='Сформировать отчёт'}
 }
-function Clear-Result {$script:ResultPath='';$script:Session=$null;Set-Visible $ResultPanel $false;Set-Visible $OpenFolder $false;Set-Visible $ResetReport $false;Clear-Message;$DestinationHint.Text='Сохранится в папку «Готовые отчёты» рядом с исходным файлом.'}
+function Clear-Result {$script:ResultPath='';$script:Session=$null;Set-Visible $ResultPanel $false;Set-Visible $OpenFolder $false;Set-Visible $ResetReport $false;Clear-Message;$DestinationHint.Text='Сохранится в папку «Готовые отчёты» рядом с файлом расчётов.'}
 function Update-Period {
  if($script:Loading){return};Clear-Result;$script:PeriodDate=$null
  if($null -ne $Sheets.SelectedItem){try{$script:PeriodDate=Sheet-Period ([string]$Sheets.SelectedItem);Set-Visible $ManualPeriodPanel $false}catch{Set-Visible $ManualPeriodPanel $true;try{$script:PeriodDate=[datetime]::ParseExact($ManualPeriod.Text,'MM.yyyy',$script:Invariant)}catch{}}}
@@ -72,8 +74,8 @@ function Start-Work([string]$operation,$payload,[string]$message,[scriptblock]$d
   . (Join-Path $root 'Core.ps1');. (Join-Path $root 'State.ps1');. (Join-Path $root 'Update.ps1')
   switch($operation){
    'Sheets' {[pscustomobject]@{Data=@(Read-SheetNames $payload.Source)}}
-   'Analyze' {$s=Analyze-BuiltIn $payload.Source $payload.Sheet $payload.Period;[pscustomobject]@{Data=$s}}
-   'Save' {$path=Unique-Output $payload.Session $payload.Draft;$saved=Save-Report $payload.Session $path (-not $payload.Draft);Save-Cache $payload.Session;[pscustomobject]@{Data=$saved;Draft=$payload.Draft}}
+   'Analyze' {$s=Analyze-Inputs $payload.Source $payload.Sheet $payload.Period $payload.Basis $payload.BasisSheet;[pscustomobject]@{Data=$s}}
+   'Save' {$path=Unique-Output $payload.Session $payload.Draft;$saved=Save-Report $payload.Session $path (-not $payload.Draft);Save-Cache $payload.Session;[pscustomobject]@{Data=$saved;Draft=$payload.Draft;Total=$payload.Session.ResultTotal;Positions=$payload.Session.ResultPositions}}
    'UpdateCheck' {[pscustomobject]@{Data=(Latest-Release $root)}}
    'UpdateDownload' {[pscustomobject]@{Data=(Download-Update $payload.Release)}}
   }
@@ -123,16 +125,32 @@ function Choose-Source {
  $dialog=New-Object Microsoft.Win32.OpenFileDialog;$dialog.Title='Выберите исходный отчёт МЗ РБ';$dialog.Filter='Книги Excel|*.xlsx;*.xls;*.xlsm';$dialog.CheckFileExists=$true
  if($dialog.ShowDialog($window) -eq $true){Load-Source $dialog.FileName}
 }
+function Load-Basis([string]$path,[string]$preferred=''){
+ if($null -ne $script:Job){return}
+ if(-not (Test-Path -LiteralPath $path -PathType Leaf) -or [IO.Path]::GetExtension($path).ToLowerInvariant() -notin @('.xls','.xlsx','.xlsm')){Show-Message 'Нужен отчёт из 1С' 'Выберите сохранённую книгу Excel из 1С.';return}
+ Clear-Result;$script:BasisPath=[IO.Path]::GetFullPath($path);$BasisName.Text=[IO.Path]::GetFileName($path);$BasisName.ToolTip=$script:BasisPath;$BasisSheets.Items.Clear();$script:PreferredBasisSheet=$preferred
+ Start-Work 'Sheets' @{Source=$script:BasisPath} 'Читаем вкладки отчёта 1С…' {
+  param($result)
+  foreach($name in $result.Data){[void]$BasisSheets.Items.Add([string]$name)}
+  if($BasisSheets.Items.Contains($script:PreferredBasisSheet)){$BasisSheets.SelectedItem=$script:PreferredBasisSheet}elseif($BasisSheets.Items.Count){$BasisSheets.SelectedIndex=0}
+  Save-Settings;Update-Action
+  if($script:InitialSource){$path=$script:InitialSource;$script:InitialSource='';Load-Source $path $script:InitialSheet}
+ }
+}
+function Choose-Basis {
+ $dialog=New-Object Microsoft.Win32.OpenFileDialog;$dialog.Title='Выберите отчёт, выгруженный из 1С';$dialog.Filter='Книги Excel|*.xls;*.xlsx;*.xlsm';$dialog.CheckFileExists=$true
+ if($dialog.ShowDialog($window) -eq $true){Load-Basis $dialog.FileName}
+}
 function Show-Result([string]$path,[bool]$draft){
  $script:ResultPath=$path;Set-Visible $MessagePanel $false;Set-Visible $ResultPanel $true;Set-Visible $OpenFolder $true;Set-Visible $ResetReport $true
  $ResultTitle.Text=if($draft){'Черновик готов'}else{'Отчёт готов'}
- $ResultDetails.Text=(Month-Display $script:PeriodDate)+' · '+$script:Session.Lines.Count+' позиций'+$(if($draft){' · требуется проверка'}else{''})
- $ResultFile.Text=[IO.Path]::GetFileName($path);$ResultFile.ToolTip=$path;$ResultTotal.Text=(Money-Display (Session-Total $script:Session))+' руб.'
+ $ResultDetails.Text=(Month-Display $script:PeriodDate)+' · '+$(if($script:Session.ResultPositions){$script:Session.ResultPositions}else{$script:Session.Lines.Count})+' позиций'+$(if($draft){' · требуется проверка'}else{''})
+ $ResultFile.Text=[IO.Path]::GetFileName($path);$ResultFile.ToolTip=$path;$ResultTotal.Text=(Money-Display $(if($null -ne $script:Session.ResultTotal){$script:Session.ResultTotal}else{Session-Total $script:Session}))+' руб.'
  $DestinationHint.Text=if($draft){'Черновик можно проверить и исправить в Excel.'}else{'Выберите другую вкладку, чтобы сформировать следующий отчёт.'}
  Update-Action
  if($script:AutoOpen){Start-Process -FilePath $path}
 }
-function Begin-Save([bool]$draft){Start-Work 'Save' @{Session=$script:Session;Draft=$draft} 'Сохраняем отчёт в Excel…' {param($result);Show-Result ([string]$result.Data) ([bool]$result.Draft)}}
+function Begin-Save([bool]$draft){Start-Work 'Save' @{Session=$script:Session;Draft=$draft} 'Сохраняем отчёт в Excel…' {param($result);$script:Session | Add-Member NoteProperty ResultTotal $result.Total -Force;$script:Session | Add-Member NoteProperty ResultPositions $result.Positions -Force;Show-Result ([string]$result.Data) ([bool]$result.Draft)}}
 function Continue-Session {
  if(Needs-Review $script:Session){
   $decision=Show-Review
@@ -141,22 +159,22 @@ function Continue-Session {
 }
 function Generate-Report {
  if($script:ResultPath){try{Start-Process -FilePath $script:ResultPath}catch{Show-Error $_};return}
- if($null -eq $script:PeriodDate -or $null -eq $Sheets.SelectedItem){return}
- $current=$null -ne $script:Session -and (Session-Current $script:Session $script:SourcePath ([string]$Sheets.SelectedItem) $script:PeriodDate.ToString('yyyy-MM') (Join-Path $PSScriptRoot 'Data\Layout.xls'))
+ if($null -eq $script:PeriodDate -or $null -eq $Sheets.SelectedItem -or -not $script:BasisPath -or $null -eq $BasisSheets.SelectedItem){return}
+ $current=$null -ne $script:Session -and (Session-Current $script:Session $script:SourcePath ([string]$Sheets.SelectedItem) $script:PeriodDate.ToString('yyyy-MM') $script:BasisPath $script:BasisPath ([string]$BasisSheets.SelectedItem))
  if($current){Continue-Session;return}
- Start-Work 'Analyze' @{Source=$script:SourcePath;Sheet=[string]$Sheets.SelectedItem;Period=$script:PeriodDate} 'Читаем выбранную вкладку и собираем отчёт…' {param($result);$script:Session=$result.Data;Continue-Session}
+ Start-Work 'Analyze' @{Source=$script:SourcePath;Sheet=[string]$Sheets.SelectedItem;Period=$script:PeriodDate;Basis=$script:BasisPath;BasisSheet=[string]$BasisSheets.SelectedItem} 'Читаем выбранную вкладку и собираем отчёт…' {param($result);$script:Session=$result.Data;Continue-Session}
 }
 function Review-Table($group){
  $table=New-Object Data.DataTable;$table.Locale=$script:Ru
- [void]$table.Columns.Add('_Index',[int]);[void]$table.Columns.Add('Name',[string]);foreach($f in $script:Fields){[void]$table.Columns.Add($f,[decimal])}
- for($i=0;$i -lt $script:Session.Lines.Count;$i++){$line=$script:Session.Lines[$i];if($line.Group -ne $group.Id){continue};$row=$table.NewRow();$row['_Index']=$i;$row['Name']=$line.Name;foreach($f in $script:Fields){$row[$f]=Money $line.$f};$table.Rows.Add($row)}
+ [void]$table.Columns.Add('_Index',[int]);[void]$table.Columns.Add('Name',[string]);if($script:Session.BasisPath){[void]$table.Columns.Add('BasisRow',[int])};foreach($f in $script:Fields){[void]$table.Columns.Add($f,[decimal])}
+ for($i=0;$i -lt $script:Session.Lines.Count;$i++){$line=$script:Session.Lines[$i];if($line.Group -ne $group.Id){continue};$row=$table.NewRow();$row['_Index']=$i;$row['Name']=$line.Name;if($script:Session.BasisPath){$row['BasisRow']=$line.BasisRow};foreach($f in $script:Fields){$row[$f]=Money $line.$f};$table.Rows.Add($row)}
  return ,$table
 }
 function Commit-Review {
  if($null -eq $script:ReviewTable -or $script:ReviewPage -ge $script:ReviewGroups.Count){return}
  if(-not $ReviewGrid.CommitEdit([Windows.Controls.DataGridEditingUnit]::Cell,$true) -or -not $ReviewGrid.CommitEdit([Windows.Controls.DataGridEditingUnit]::Row,$true)){throw 'Проверьте суммы: введите обычное число, например 1234,56.'}
  $changed=$false
- foreach($row in $script:ReviewTable.Rows){$line=$script:Session.Lines[[int]$row['_Index']];if($line.Name -cne [string]$row['Name'] -or $line.ContractDate -cne $ContractDate.Text.Trim()){$changed=$true};$line.Name=[string]$row['Name'];foreach($f in $script:Fields){$value=Money $row[$f];if((Money $line.$f) -ne $value){$changed=$true};$line.$f=$value};$line.ContractDate=$ContractDate.Text.Trim()}
+ foreach($row in $script:ReviewTable.Rows){$line=$script:Session.Lines[[int]$row['_Index']];if($line.Name -cne [string]$row['Name'] -or $line.ContractDate -cne $ContractDate.Text.Trim()){$changed=$true};$line.Name=[string]$row['Name'];if($script:Session.BasisPath){if($line.BasisRow -ne [int]$row['BasisRow']){$changed=$true};$line.BasisRow=[int]$row['BasisRow']};foreach($f in $script:Fields){$value=Money $row[$f];if((Money $line.$f) -ne $value){$changed=$true};$line.$f=$value};$line.ContractDate=$ContractDate.Text.Trim()}
  if($changed){$group=$script:ReviewGroups[$script:ReviewPage];foreach($line in $script:Session.Lines){if($line.Group -eq $group.Id){$line.Reviewed=$false}}}
  Save-Cache $script:Session
 }
@@ -174,7 +192,7 @@ function Show-ReviewPage {
  if($warningsPage){$ContractTitle.Text='Записи без отчётного месяца';$ContractHelp.Text='Подтвердите, что эти данные можно оставить за пределами отчёта.';$UndatedRows.Text=$script:Session.Warnings -join "`r`n`r`n";$WarningsConfirmed.IsChecked=$script:Session.Confirmed;$ReviewNext.Content='Сформировать отчёт';$script:ReviewTable=$null;return}
  $group=$script:ReviewGroups[$script:ReviewPage];$script:ReviewTable=Review-Table $group;$ReviewGrid.ItemsSource=$script:ReviewTable.DefaultView
  $ContractTitle.Text='Договор '+$group.Contract;$ContractHelp.Text=if($script:ReviewTable.Rows.Count -gt 1){'В договоре несколько препаратов. Проверьте, как общая сумма распределена между строками.'}else{'Проверьте реквизиты договора и распределение расходов.'}
- $first=$script:Session.Lines[[int]$script:ReviewTable.Rows[0]['_Index']];$ContractDate.Text=$first.ContractDate;$Explanation.Text=$group.Note
+ $first=$script:Session.Lines[[int]$script:ReviewTable.Rows[0]['_Index']];$ContractDate.Text=$first.ContractDate;$Explanation.Text=$group.Note;if($script:Session.BasisPath){$ContractHelp.Text+=' Строка 1С: номер строки исходной книги; 0 — не переносить сумму. Реквизиты существующих строк и данные учреждений сохраняются.'}
  $sourceTable=New-Object Data.DataTable;foreach($name in @('Строка','Запись','Сумма')){[void]$sourceTable.Columns.Add($name,[string])}
  foreach($ev in $script:Session.Events){if($ev.BlockId -eq $group.Id){$r=$sourceTable.NewRow();$r['Строка']=[string]$ev.Row;$r['Запись']=$ev.Label;$r['Сумма']=Money-Display $ev.Amount;$sourceTable.Rows.Add($r)}}
  foreach($ex in $script:Session.Expenses){if($ex.BlockId -eq $group.Id){foreach($field in @('Conversion18','Commission20','Vat19','Other21')){$names=@{Conversion18='Покупка валюты';Commission20='Комиссия';Vat19='НДС / таможня';Other21='Прочие расходы'};if((Money $ex.$field) -ne 0){$r=$sourceTable.NewRow();$r['Строка']=[string]$ex.Row;$r['Запись']='Расшифровка: '+$names[$field];$r['Сумма']=Money-Display $ex.$field;$sourceTable.Rows.Add($r)}}}}
@@ -199,11 +217,11 @@ function Show-Review {
  $script:ReviewWindow=Load-Xaml 'Review.xaml';Fit-Window $script:ReviewWindow;$script:ReviewWindow.Owner=$window;$script:ReviewWindow.Icon=$window.Icon;[void]$script:ReviewWindow.Resources.MergedDictionaries.Add($window.Resources)
  foreach($name in @('ReviewProgress','ContractTitle','ContractHelp','ContractDatePanel','ContractDate','TableHeading','ReviewGrid','WarningPage','UndatedRows','WarningsConfirmed','Balance','ReviewError','SourceExpander','Explanation','SourceRows','ReviewBack','ReviewCancel','SaveDraft','ReviewNext','AddDrug')){Set-Variable -Scope Script -Name $name -Value $script:ReviewWindow.FindName($name)}
  $titles=@{Name='Лекарственное средство';Transfer='Отпуск';Redistribution='Перераспр.';Conversion='Покупка валюты';Fx='Курс. разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие'}
- foreach($field in @('Name')+$script:Fields){$col=New-Object Windows.Controls.DataGridTextColumn;$col.Header=$titles[$field];$col.Width=if($field -eq 'Name'){210}else{100};$binding=New-Object Windows.Data.Binding($field);$binding.UpdateSourceTrigger='PropertyChanged';$binding.ValidatesOnExceptions=$true;$binding.ConverterCulture=$script:Ru;if($field -ne 'Name'){$binding.StringFormat='N2'};$col.Binding=$binding;[void]$ReviewGrid.Columns.Add($col)}
+ foreach($field in @($(if($script:Session.BasisPath){'BasisRow'}),'Name')+$script:Fields | Where-Object {$_}){$col=New-Object Windows.Controls.DataGridTextColumn;$col.Header=if($field -eq 'BasisRow'){'Строка 1С (0 — пропуск)'}else{$titles[$field]};$col.Width=if($field -eq 'Name'){210}else{100};$binding=New-Object Windows.Data.Binding($field);$binding.UpdateSourceTrigger='PropertyChanged';$binding.ValidatesOnExceptions=$true;$binding.ConverterCulture=$script:Ru;if($field -notin @('Name','BasisRow')){$binding.StringFormat='N2'};$col.Binding=$binding;[void]$ReviewGrid.Columns.Add($col)}
  $ReviewNext.Add_Click({Confirm-ReviewPage});$ReviewCancel.Add_Click({try{Commit-Review}catch{};$script:ReviewWindow.Close()})
  $ReviewBack.Add_Click({try{Commit-Review;if($script:ReviewPage -gt 0){$script:ReviewPage--;Show-ReviewPage}}catch{$ReviewError.Text=$_.Exception.Message}})
  $SaveDraft.Add_Click({try{Commit-Review;$errors=@(Validate-Session $script:Session $false);if($errors.Count){throw 'Суммы позиций пока не совпадают с исходником. Исправьте распределение, чтобы сохранить черновик.'};Save-Cache $script:Session;$script:Decision='Draft';$script:ReviewWindow.Close()}catch{$ReviewError.Text=$_.Exception.Message}})
- $AddDrug.Add_Click({try{Commit-Review;$group=$script:ReviewGroups[$script:ReviewPage];$existing=@($script:Session.Lines | Where-Object {$_.Group -eq $group.Id});if(@($existing | Where-Object {-not (Text $_.Name)}).Count){return};$first=$existing[0];$props=[ordered]@{};foreach($prop in $first.PSObject.Properties){$props[$prop.Name]=$prop.Value};$line=[pscustomobject]$props;$line.Name='';$line.Reviewed=$false;$line | Add-Member -NotePropertyName NewlyAdded -NotePropertyValue $true -Force;foreach($f in $script:Fields){$line.$f=[decimal]0};$index=0;for($i=0;$i -lt $script:Session.Lines.Count;$i++){if($script:Session.Lines[$i].Group -eq $group.Id){$index=$i+1}};$script:Session.Lines.Insert($index,$line);Show-ReviewPage}catch{$ReviewError.Text=$_.Exception.Message}})
+ $AddDrug.Add_Click({try{Commit-Review;$group=$script:ReviewGroups[$script:ReviewPage];$existing=@($script:Session.Lines | Where-Object {$_.Group -eq $group.Id});if(@($existing | Where-Object {-not (Text $_.Name)}).Count){return};$first=$existing[0];$props=[ordered]@{};foreach($prop in $first.PSObject.Properties){$props[$prop.Name]=$prop.Value};$line=[pscustomobject]$props;$line.Name='';$line.Reviewed=$false;if($script:Session.BasisPath){$line.BasisRow=-1};$line | Add-Member -NotePropertyName NewlyAdded -NotePropertyValue $true -Force;foreach($f in $script:Fields){$line.$f=[decimal]0};$index=0;for($i=0;$i -lt $script:Session.Lines.Count;$i++){if($script:Session.Lines[$i].Group -eq $group.Id){$index=$i+1}};$script:Session.Lines.Insert($index,$line);Show-ReviewPage}catch{$ReviewError.Text=$_.Exception.Message}})
  $script:ReviewWindow.Add_Closing({try{Commit-Review;foreach($line in @($script:Session.Lines | Where-Object {$_.NewlyAdded -and -not (Text $_.Name) -and (Line-Total $_) -eq 0})){[void]$script:Session.Lines.Remove($line)};Save-Cache $script:Session}catch{}})
  Show-ReviewPage
  if($Mode -eq 'Preview' -and $Screen -eq 'Review'){Capture-Window $script:ReviewWindow $PreviewPath;$script:ReviewWindow=$null;return 'Cancel'}
@@ -223,9 +241,10 @@ function Pump-Work([int]$seconds=55){
 }
 try{
  $window=Load-Xaml 'Main.xaml';Fit-Window $window;$icon=Join-Path $PSScriptRoot 'Data\Report.ico';if(Test-Path -LiteralPath $icon){$window.Icon=[Windows.Media.Imaging.BitmapFrame]::Create([uri]$icon)}
- foreach($name in @('FileCard','FileName','FileLocation','ChooseFile','Sheets','ReportMonth','ManualPeriodPanel','ManualPeriod','ProgressPanel','ProgressText','MessagePanel','MessageTitle','MessageBody','ResultPanel','ResultTitle','ResultDetails','ResultFile','ResultTotal','Generate','DestinationHint','OpenFolder','ResetReport','CheckUpdates','VersionLabel','UpdateStatus')){Set-Variable -Scope Script -Name $name -Value $window.FindName($name)}
+ foreach($name in @('BasisName','BasisSheets','ChooseBasis','FileCard','FileName','FileLocation','ChooseFile','Sheets','ReportMonth','ManualPeriodPanel','ManualPeriod','ProgressPanel','ProgressText','MessagePanel','MessageTitle','MessageBody','ResultPanel','ResultTitle','ResultDetails','ResultFile','ResultTotal','Generate','DestinationHint','OpenFolder','ResetReport','CheckUpdates','VersionLabel','UpdateStatus')){Set-Variable -Scope Script -Name $name -Value $window.FindName($name)}
  $VersionLabel.Text='Версия '+(App-Version).ToString();$CheckUpdates.Add_Click({try{Check-AppUpdates}catch{Log-Error $_;$UpdateStatus.Text='Не удалось установить обновление. Повторите попытку.'}})
  if($UpdatedFrom -eq 'GitHub'){$UpdateStatus.Text='Обновление установлено'}
+ $ChooseBasis.Add_Click({Choose-Basis});$BasisSheets.Add_SelectionChanged({Clear-Result;Save-Settings;Update-Action})
  $Generate.IsDefault=$true;$ChooseFile.Add_Click({Choose-Source});$Generate.Add_Click({try{Generate-Report}catch{Show-Error $_}});$Sheets.Add_SelectionChanged({Update-Period});$ManualPeriod.Add_TextChanged({Update-Period})
  $OpenFolder.Add_Click({if($script:ResultPath){Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"'+$script:ResultPath+'"')}})
  $ResetReport.Add_Click({try{$script:ResultPath='';Set-Visible $ResultPanel $false;Set-Visible $OpenFolder $false;Set-Visible $ResetReport $false;Generate-Report}catch{Show-Error $_}})
@@ -245,7 +264,9 @@ try{
  $settingsPath=Join-Path $PSScriptRoot 'Data\Settings.json';$preferred=''
  if(Test-Path -LiteralPath $settingsPath){try{$settings=Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json;if(Test-Path -LiteralPath $settings.Source -PathType Leaf){$Source=$settings.Source;$preferred=$settings.Sheet}}catch{}}
  if(-not $Source){foreach($folder in @($PSScriptRoot,(Split-Path $PSScriptRoot -Parent))){$candidate=Get-ChildItem -LiteralPath $folder -File -Filter '*.xlsx' | Where-Object {$_.Name -like '*Отч*' -and $_.Name -notlike '~$*'} | Sort-Object LastWriteTime -Descending | Select-Object -First 1;if($candidate){$Source=$candidate.FullName;break}}}
- $script:InitialSource=$Source;$script:InitialSheet=$preferred;$window.Add_ContentRendered({if($script:InitialSource){$path=$script:InitialSource;$script:InitialSource='';Load-Source $path $script:InitialSheet}})
+ if(-not $Basis -and $settings -and $settings.Basis){$Basis=$settings.Basis;$BasisSheet=$settings.BasisSheet}
+ $script:InitialBasis=$Basis;$script:InitialBasisSheet=$BasisSheet
+ $script:InitialSource=$Source;$script:InitialSheet=$preferred;$window.Add_ContentRendered({if($script:InitialBasis){$path=$script:InitialBasis;$script:InitialBasis='';Load-Basis $path $script:InitialBasisSheet}elseif($script:InitialSource){$path=$script:InitialSource;$script:InitialSource='';Load-Source $path $script:InitialSheet}})
  [void]$window.ShowDialog()
 }catch{Log-Error $_;if($Mode -eq 'UI'){[void][Windows.MessageBox]::Show($_.Exception.Message,'Не удалось открыть программу','OK','Error')}else{Write-Output $_.ToString();Write-Output $_.ScriptStackTrace};exit 1}
 finally{if($null -ne $script:Timer){$script:Timer.Stop()};if($null -ne $script:Job -and $script:Job.Handle.IsCompleted){$script:Job.Shell.Dispose();$script:Job.Runspace.Dispose()}}

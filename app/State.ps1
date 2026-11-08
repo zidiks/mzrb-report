@@ -7,13 +7,14 @@ function Restore-Session([string]$path){
  foreach($l in $s.Lines){foreach($f in $script:Fields){$l.$f=Money $l.$f}};foreach($ev in $s.Events){$ev.Amount=Money $ev.Amount}
  return $s
 }
-function Session-Current($s,[string]$source,[string]$sheet,[string]$period,[string]$template){
+function Session-Current($s,[string]$source,[string]$sheet,[string]$period,[string]$template,[string]$basisPath='',[string]$basisSheet=''){
  if($null -eq $s -or $s.Source -ne $source -or $s.Sheet -ne $sheet -or $s.PeriodKey -ne $period -or $s.Template -ne $template){return $false}
+ if($basisPath){if($s.BasisPath -ne $basisPath -or $s.BasisSheet -ne $basisSheet -or -not (Test-Path -LiteralPath $basisPath -PathType Leaf)){return $false};if($s.BasisFileHash -ne (File-Sha256 $basisPath)){return $false}}elseif($s.BasisPath){return $false}
  if(-not (Test-Path -LiteralPath $source -PathType Leaf)){return $false}
  return $s.SourceFileHash -eq (File-Sha256 $source) -and $s.TemplateFileHash -eq (File-Sha256 $template) -and $s.EngineHash -eq (File-Sha256 (Join-Path $PSScriptRoot 'Core.ps1'))
 }
-function Cache-Path($source,$sheet,$period){return Join-Path $PSScriptRoot ('Data\Work\'+(Get-Hash ($source.ToLowerInvariant()+'|'+$sheet+'|'+$period))+'.json')}
-function Save-Cache($s){Save-Session $s (Cache-Path $s.Source $s.Sheet $s.PeriodKey)}
+function Cache-Path($source,$sheet,$period,$basisPath='',$basisSheet=''){return Join-Path $PSScriptRoot ('Data\Work\'+(Get-Hash ($source.ToLowerInvariant()+'|'+$sheet+'|'+$period+'|'+$basisPath.ToLowerInvariant()+'|'+$basisSheet))+'.json')}
+function Save-Cache($s){Save-Session $s (Cache-Path $s.Source $s.Sheet $s.PeriodKey ([string]$s.BasisPath) ([string]$s.BasisSheet))}
 function Pending-Groups($s){$ids=@{};foreach($l in $s.Lines){if(-not $l.Reviewed){$ids[$l.Group]=$true}};return @($s.Groups | Where-Object {$ids.ContainsKey($_.Id)})}
 function Needs-Review($s){return @(Pending-Groups $s).Count -gt 0 -or ($s.Warnings.Count -gt 0 -and -not $s.Confirmed)}
 function Unique-Output($s,[bool]$draft){
