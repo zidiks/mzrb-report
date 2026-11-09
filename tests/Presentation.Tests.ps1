@@ -37,4 +37,26 @@ foreach($m in $p.Merges){Assert ($m.Column -le 5 -and $m.LastRow -lt (9+$group.E
 # A month without redistribution still has a valid zero summary and unchanged before-total.
 $empty=[pscustomobject]@{Rows=@($e);ContractBlocks=@();Total=[decimal]60};$p0=Get-ReportPresentation $empty
 Assert ($p0.Redistributions.Count -eq 0 -and $p0.RedistributionTotal -eq 0 -and $p0.TotalBeforeRedistribution -eq 60) 'Zero redistribution month is valid'
+# Model Excel's rejection of a range that intersects only F of merged F:G.
+function Test-FormatRange($sheet,[string]$address,[bool]$partial=$false){
+ $range=[pscustomobject]@{Sheet=$sheet;Address=$address;Partial=$partial;StoredFormat=''}
+ $range | Add-Member ScriptProperty NumberFormat {$this.StoredFormat} {
+  param($value)
+  if($this.Partial){throw 'Cannot set NumberFormat on part of a merged cell'}
+  $this.StoredFormat=$value;$this.Sheet.Writes.Add($this.Address)
+ }
+ return $range
+}
+$fake=[pscustomobject]@{Writes=(New-Object Collections.Generic.List[string]);GrandRow=$p.GrandRow}
+$fake | Add-Member ScriptMethod Range {
+ param($address)
+ $range=Test-FormatRange $this $address ($address -eq ('F9:F'+$this.GrandRow))
+ if($address -eq ('F'+$this.GrandRow)){$range | Add-Member NoteProperty MergeArea (Test-FormatRange $this ('F'+$this.GrandRow+':G'+$this.GrandRow))}
+ return $range
+}
+$rejected=$false;try{$fake.Range('F9:F'+$p.GrandRow).NumberFormat=$p.NumberFormat}catch{$rejected=$true}
+Assert $rejected 'Regression fixture rejects partial access to the inherited merged grand total'
+Set-ReportMoneyFormats $fake $p
+Assert ($fake.Writes.Count -eq 8 -and $fake.Writes.Contains('F'+$p.GrandRow+':G'+$p.GrandRow)) 'Format the entire merged grand total separately'
+foreach($column in @('F','H','I','J','K','L','M')){Assert ($fake.Writes.Contains($column+'9:'+$column+$p.TotalRow)) 'Column formatting stops at subtotal before the merged grand-total row'}
 "$count presentation checks passed"

@@ -733,10 +733,17 @@ function Get-ReportPresentation($plan){
  return [pscustomobject]@{TotalRow=$total;GrandRow=$grand;FooterHeading=$heading;FooterFirst=$first;FooterSum=$sumRow;BeforeRow=$before;EndRow=$before;Redistributions=$details.ToArray();RedistributionTotal=$redisTotal;TotalBeforeRedistribution=($plan.Total-$redisTotal);Merges=$merges.ToArray();NumberFormat=(Report-NumberFormat)}
 }
 
+function Set-ReportMoneyFormats($sheet,$presentation){
+ # The inherited grand-total cell spans F:G. Formatting a column through that
+ # row touches only part of the merge and Excel rejects NumberFormat (1004).
+ foreach($column in @('F','H','I','J','K','L','M')){$sheet.Range("${column}9:${column}$($presentation.TotalRow)").NumberFormat=$presentation.NumberFormat}
+ $sheet.Range("F$($presentation.GrandRow)").MergeArea.NumberFormat=$presentation.NumberFormat
+}
+
 function Apply-ReportPresentation($sheet,$plan,$presentation){
  Set-ExcelText $sheet 6 10 'Курсовые разницы'
  Set-ExcelText $sheet 6 11 'Комиссионное вознаграждение РУП БЕЛФАРМАЦИЯ'
- foreach($column in @('F','H','I','J','K','L','M')){$sheet.Range("${column}9:${column}$($presentation.GrandRow)").NumberFormat=$presentation.NumberFormat}
+ Set-ReportMoneyFormats $sheet $presentation
  foreach($m in $presentation.Merges){
   $range=$sheet.Range($sheet.Cells.Item($m.FirstRow,$m.Column),$sheet.Cells.Item($m.LastRow,$m.Column))
   [void]$range.Merge();$range.VerticalAlignment=-4108;$range.WrapText=$true
