@@ -425,8 +425,9 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
  try{
   $excel=New-Excel;$book=$excel.Workbooks.Open($temp,0,$false);$ws=$book.Worksheets.Item($s.BasisSheet)
   $basis=Read-Basis (Read-Matrix $ws) ([datetime]::ParseExact($s.PeriodKey,'yyyy-MM',$script:Invariant));$plan=Merge-Basis $s $basis
-  if($plan.Rows.Count -gt 65000){throw 'Слишком много строк для формата XLS.'}
-  $widths=Compact-Columns $ws;$format=$ws.Cells.Item($basis.TotalRow,6).NumberFormat
+  $presentation=Get-ReportPresentation $plan
+  if($plan.Rows.Count -gt 65000 -or $presentation.EndRow -gt 65536){throw 'Слишком много строк для формата XLS с учётом сводки перераспределений.'}
+  $widths=Compact-Columns $ws;$format=$presentation.NumberFormat
   $donor=$book.Worksheets.Add();[void]$ws.Range("A9:M$($basis.TotalRow-1)").Copy($donor.Range('A1'));[void]$donor.UsedRange.ClearContents()
   [void]$ws.Rows.Item("9:$($basis.TotalRow-1)").Delete();[void]$ws.Rows.Item("9:$($plan.Rows.Count+8)").Insert()
   $row=9
@@ -441,14 +442,17 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
    $row++
   }
   $donor.Delete();$total=$row;$grand=$row+1
+  $ws.Range("B9:G$($total-1)").WrapText=$true;[void]$ws.Range("A9:M$($total-1)").Rows.AutoFit()
   [void]$ws.Range("A${total}:M${grand}").ClearContents()
   foreach($c in @('F','H','I','J','K','L','M')){$ws.Range("$c$total").Formula="=SUM(${c}9:${c}$($total-1))";$ws.Range("$c$total").NumberFormat=$format}
   Set-ExcelText $ws $total 5 'ИТОГО:';Set-ExcelText $ws $grand 5 'ВСЕГО:'
   $ws.Range("F$grand").Formula="=SUM(F$total,I$total,J$total,K$total,L$total,M$total)";$ws.Range("F$grand").MergeArea.NumberFormat=$format
+  Apply-ReportPresentation $ws $plan $presentation
   $excel.Calculation=-4105;$excel.CalculateFull()
   if((Money $ws.Range("F$grand").Value2) -ne $plan.Total){throw 'Итог Excel не совпал с суммой объединённых данных.'}
   for($i=0;$i -lt 13;$i++){if([Math]::Abs([double]$ws.Columns.Item($i+1).Width-$widths[$i]) -gt 0.76){throw 'Изменилась ширина поля.'}}
-  $ws.PageSetup.PrintArea='$A$3:$M$'+$grand
+  if((Money $ws.Cells.Item($presentation.FooterSum,6).Value2) -ne $presentation.RedistributionTotal -or (Money $ws.Cells.Item($presentation.BeforeRow,6).Value2) -ne $presentation.TotalBeforeRedistribution){throw 'Не сошлась сводка перераспределений.'}
+  $ws.PageSetup.PrintArea='$A$3:$M$'+$presentation.EndRow
   # Only the selected report sheet is exported, in a real XLS container even for XLSX input.
   [void]$ws.Copy();$result=$excel.ActiveWorkbook
   try{$result.CheckCompatibility=$false;$result.SaveAs($output,56)}finally{$result.Close($false)}
@@ -582,9 +586,10 @@ function Merge-AutomaticContracts($s,$basis){
   if($source.Fields.Contains('Redistribution')){Add-OutputRedistribution $rows $members $primary (Money $source.Amounts['Redistribution']) $changes $sources}
 
  }
- $layout=Finalize-OutputRows $rows
+ $layout=Finalize-OutputRows $rows $s
+ foreach($note in $layout.Notes){$notes.Add($note)}
  $total=[decimal]0;foreach($r in $layout.Rows){foreach($i in @(5,8,9,10,11,12)){$total+=Money $r.Values[$i]}}
- return [pscustomobject]@{Rows=$layout.Rows;Changes=$changes.ToArray();Skipped=$skipped.ToArray();Notes=$notes.ToArray();MatchedContracts=$matched;Total=$total;PositionCount=$layout.PositionCount;RemovedRows=$layout.Removed;AddedContracts=$addedSets.Count}
+ return [pscustomobject]@{Rows=$layout.Rows;Changes=$changes.ToArray();Skipped=$skipped.ToArray();Notes=$notes.ToArray();MatchedContracts=$matched;Total=$total;PositionCount=$layout.PositionCount;RemovedRows=$layout.Removed;AddedContracts=$addedSets.Count;ContractBlocks=$layout.ContractBlocks}
 }
 
 function Has-OutputRowData($row){
@@ -594,7 +599,8 @@ function Has-OutputRowData($row){
  foreach($i in @(5,7,8,9,10,11,12)){if((Money $row.Values[$i]) -ne 0){return $true}}
  return $false
 }
-function Finalize-OutputRows($rows){
+function Finalize-OutputRows($rows,$session=$null){
+ Clean-InstitutionNames $rows
  $kept=New-Object Collections.Generic.List[object];$removed=New-Object Collections.Generic.List[object]
  foreach($row in $rows){
   $useful=Has-OutputRowData $row
@@ -603,9 +609,10 @@ function Finalize-OutputRows($rows){
   }
   if($useful){$kept.Add($row)}else{$removed.Add([pscustomobject]@{BasisRow=$row.Row;Contract=$row.Values[3];Supplier=$row.Values[2];Date=$row.Values[4]})}
  }
+ $arranged=if($null -ne $session){Arrange-ReportRows $kept $session}else{[pscustomobject]@{Rows=$kept.ToArray();Blocks=@();Notes=@()}}
  $number=0
- foreach($row in $kept){if($row.IsMain -and -not $row.IsRedistribution){$number++;$row.Values[0]=[string]$number}else{$row.Values[0]=$null}}
- return [pscustomobject]@{Rows=$kept.ToArray();Removed=$removed.ToArray();PositionCount=$number}
+ foreach($row in $arranged.Rows){if($row.IsMain -and -not $row.IsRedistribution){$number++;$row.Values[0]=[string]$number}else{$row.Values[0]=$null}}
+ return [pscustomobject]@{Rows=$arranged.Rows;Removed=$removed.ToArray();PositionCount=$number;ContractBlocks=$arranged.Blocks;Notes=$arranged.Notes}
 }
 function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$changes,$sourceRows){
  $parents=@($members | ForEach-Object {$_.Identity})
@@ -626,4 +633,133 @@ function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$chan
   while($index -lt $rows.Count -and $rows[$index].IsRedistribution -and $rows[$index].ParentKey -eq $parent.Identity){$index++}
   $rows.Insert($index,$r)
  }
+}
+
+function Report-NumberFormat {return '[$-419]#,##0.00;[$-419]-#,##0.00;[$-419]0.00'}
+function Name-ScriptRank($value){
+ $m=[regex]::Match((Text $value),'\p{L}')
+ if(-not $m.Success){return 3}
+ if($m.Value -match '[A-Za-z\u00C0-\u024F]'){return 0}
+ if($m.Value -match '\p{IsCyrillic}'){return 1}
+ return 2
+}
+function Name-SortText($value){return (Text $value).Trim([char[]]' "«»“”').ToLowerInvariant().Replace('ё','е')}
+function Supplier-Residency($value){
+ $text=Text $value
+ if($text -match '(?i)(\bРБ\b|Беларус[ьи]|\bBelarus\b)'){return 1}
+ if($text -match '(?i)\b(РФ|Россия|России|Российская Федерация|Латвия|Литва|Эстония|Швейцария|Франция|Израиль|Индия|Словения|Казахстан|Германия|Польша|Китай|Турция|Украина|Австрия|Испания|Бельгия|Великобритания|США|Нидерланды|Италия|Венгрия|Дания|Швеция|Финляндия|Корея|Ирландия|Кипр|Russia|Latvia|Lithuania|Estonia|Switzerland|France|Israel|India|Germany|Poland|China|Italy|UK|USA)\b'){return 0}
+ return 2
+}
+function Contract-Residency($row,$session){
+ $direct=Supplier-Residency $row.Values[2];if($direct -lt 2){return $direct}
+ $records=@($session.AllContracts | Where-Object {(Contract-Key $_.Contract) -eq (Contract-Key $row.Values[3])})
+ $date=Source-DateKey $row.Values[4]
+ if($date){$dated=@($records | Where-Object {(Source-DateKey $_.ContractDate) -eq $date});if($dated.Count){$records=$dated}}
+ $ranks=@($records | ForEach-Object {Supplier-Residency $_.Supplier} | Where-Object {$_ -lt 2} | Select-Object -Unique)
+ if($ranks.Count -eq 1){return [int]$ranks[0]}
+ return 2
+}
+function Clean-InstitutionNames($rows){
+ $lastName=''
+ foreach($r in $rows){
+  $name=Text $r.Values[6]
+  if($name -ne '' -and $name -match '^[\s"''«»“”〃\-–—]+$'){
+   # A ditto sign with an amount refers to the preceding institution in the original book.
+   # Expand it before sorting, otherwise its meaning would change after moving rows.
+   if($name -match '^[\s"''«»“”〃]+$' -and (Money $r.Values[7]) -ne 0 -and $lastName){$r.Values[6]=$lastName}else{$r.Values[6]=$null}
+  }elseif($name){$lastName=$name}
+ }
+}
+function Arrange-ReportRows($rows,$session){
+ $groups=[ordered]@{};$children=@{};$used=@{};$unknown=New-Object Collections.Generic.List[string]
+ foreach($r in $rows){
+  if($r.IsMain -and -not $r.IsRedistribution){
+   $key=(Contract-Key $r.Values[3])+'|'+(Source-DateKey $r.Values[4])+'|'+(Normal $r.Values[2])
+   if(-not $groups.Contains($key)){$groups[$key]=[pscustomobject]@{Key=$key;Main=(New-Object Collections.Generic.List[object]);Residency=(Contract-Residency $r $session);OriginalRow=$r.Row}}
+   $groups[$key].Main.Add($r)
+  }elseif($r.ParentKey){if(-not $children.ContainsKey($r.ParentKey)){$children[$r.ParentKey]=New-Object Collections.Generic.List[object]};$children[$r.ParentKey].Add($r)}
+ }
+ $residentRows=@($groups.Values | Where-Object {$_.Residency -eq 1 -and $_.OriginalRow -gt 0} | ForEach-Object {$_.OriginalRow})
+ $foreignRows=@($groups.Values | Where-Object {$_.Residency -eq 0 -and $_.OriginalRow -gt 0} | ForEach-Object {$_.OriginalRow})
+ $firstResident=if($residentRows.Count){($residentRows | Measure-Object -Minimum).Minimum}else{0}
+ $lastForeign=if($foreignRows.Count){($foreignRows | Measure-Object -Maximum).Maximum}else{0}
+ foreach($g in $groups.Values){
+  if($g.Residency -eq 2){
+   if($firstResident -gt 0 -and $g.OriginalRow -gt 0 -and $g.OriginalRow -lt $firstResident){$g.Residency=0}
+   elseif($lastForeign -gt 0 -and $g.OriginalRow -gt $lastForeign){$g.Residency=1}
+   else{if(-not $unknown.Contains((Text $g.Main[0].Values[2]))){$unknown.Add((Text $g.Main[0].Values[2]))}}
+  }
+  $sorted=@($g.Main | Sort-Object @{Expression={Name-ScriptRank $_.Values[1]}},@{Expression={Name-SortText $_.Values[1]}},@{Expression={Name-ScriptRank $_.Values[2]}},@{Expression={Name-SortText $_.Values[2]}},Identity -Culture ru-RU)
+  $g | Add-Member NoteProperty SortedMain $sorted -Force
+  $g | Add-Member NoteProperty ScriptRank (Name-ScriptRank $sorted[0].Values[1]) -Force
+  $g | Add-Member NoteProperty SortName (Name-SortText $sorted[0].Values[1]) -Force
+  $g | Add-Member NoteProperty SortSupplierRank (Name-ScriptRank $sorted[0].Values[2]) -Force
+  $g | Add-Member NoteProperty SortSupplier (Name-SortText $sorted[0].Values[2]) -Force
+ }
+ $ordered=New-Object Collections.Generic.List[object];$blocks=New-Object Collections.Generic.List[object]
+ foreach($g in @($groups.Values | Sort-Object Residency,ScriptRank,SortName,SortSupplierRank,SortSupplier,Key -Culture ru-RU)){
+  $start=$ordered.Count;$products=New-Object Collections.Generic.List[object];$redis=New-Object Collections.Generic.List[object]
+  foreach($main in $g.SortedMain){
+   $first=$ordered.Count;$ordered.Add($main);$used[$main.Identity]=$true
+   foreach($child in $children[$main.Identity]){if($child.IsRedistribution){$redis.Add($child)}else{$ordered.Add($child);$used[$child.Identity]=$true}}
+   $products.Add([pscustomobject]@{StartIndex=$first;EndIndex=$ordered.Count-1})
+  }
+  $dataEnd=$ordered.Count-1
+  foreach($r in $redis){$ordered.Add($r);$used[$r.Identity]=$true}
+  $blocks.Add([pscustomobject]@{Key=$g.Key;Residency=$g.Residency;StartIndex=$start;DataEndIndex=$dataEnd;EndIndex=$ordered.Count-1;Products=$products.ToArray()})
+ }
+ # Preserve any useful unlinked rows instead of silently dropping data.
+ foreach($r in $rows){if(-not $used.ContainsKey($r.Identity)){$ordered.Add($r)}}
+ $notes=New-Object Collections.Generic.List[object]
+ if($unknown.Count){$notes.Add([pscustomobject]@{SourceRow='';Contract='';Name=($unknown -join '; ');Relevant=$true;Reason='Страна поставщика не определена. Эти договоры размещены после известных нерезидентов и резидентов; проверьте страну в исходных данных.'})}
+ return [pscustomobject]@{Rows=$ordered.ToArray();Blocks=$blocks.ToArray();Notes=$notes.ToArray()}
+}
+function Get-ReportPresentation($plan){
+ $total=9+$plan.Rows.Count;$grand=$total+1;$details=New-Object Collections.Generic.List[object]
+ for($i=0;$i -lt $plan.Rows.Count;$i++){if($plan.Rows[$i].IsRedistribution){$details.Add([pscustomobject]@{TableRow=9+$i;Amount=(Money $plan.Rows[$i].Values[5]);ParentKey=$plan.Rows[$i].ParentKey})}}
+ $heading=$grand+3;$first=$heading+1;$sumRow=$first+$details.Count;$before=$sumRow+2
+ $redisTotal=[decimal]0;foreach($d in $details){$redisTotal+=$d.Amount}
+ $merges=New-Object Collections.Generic.List[object]
+ foreach($block in $plan.ContractBlocks){
+  if($block.DataEndIndex -gt $block.StartIndex){foreach($column in @(3,4,5)){
+   $values=@(for($i=$block.StartIndex;$i -le $block.DataEndIndex;$i++){if((Text $plan.Rows[$i].Values[$column-1]) -ne ''){Text $plan.Rows[$i].Values[$column-1]}}) | Select-Object -Unique
+   if(@($values).Count -eq 1 -and (Text $values) -ne ''){$merges.Add([pscustomobject]@{Column=$column;FirstRow=9+$block.StartIndex;LastRow=9+$block.DataEndIndex})}
+  }}
+  foreach($product in $block.Products){if($product.EndIndex -gt $product.StartIndex){foreach($column in @(1,2)){
+   $values=@(for($i=$product.StartIndex;$i -le $product.EndIndex;$i++){if((Text $plan.Rows[$i].Values[$column-1]) -ne ''){Text $plan.Rows[$i].Values[$column-1]}}) | Select-Object -Unique
+   if(@($values).Count -eq 1 -and (Text $values) -ne ''){$merges.Add([pscustomobject]@{Column=$column;FirstRow=9+$product.StartIndex;LastRow=9+$product.EndIndex})}
+  }}}
+ }
+ return [pscustomobject]@{TotalRow=$total;GrandRow=$grand;FooterHeading=$heading;FooterFirst=$first;FooterSum=$sumRow;BeforeRow=$before;EndRow=$before;Redistributions=$details.ToArray();RedistributionTotal=$redisTotal;TotalBeforeRedistribution=($plan.Total-$redisTotal);Merges=$merges.ToArray();NumberFormat=(Report-NumberFormat)}
+}
+
+function Apply-ReportPresentation($sheet,$plan,$presentation){
+ Set-ExcelText $sheet 6 10 'Курсовые разницы'
+ Set-ExcelText $sheet 6 11 'Комиссионное вознаграждение РУП БЕЛФАРМАЦИЯ'
+ foreach($column in @('F','H','I','J','K','L','M')){$sheet.Range("${column}9:${column}$($presentation.GrandRow)").NumberFormat=$presentation.NumberFormat}
+ foreach($m in $presentation.Merges){
+  $range=$sheet.Range($sheet.Cells.Item($m.FirstRow,$m.Column),$sheet.Cells.Item($m.LastRow,$m.Column))
+  [void]$range.Merge();$range.VerticalAlignment=-4108;$range.WrapText=$true
+ }
+ $heading=$presentation.FooterHeading
+ [void]$sheet.Range("D${heading}:E${heading}").Merge();Set-ExcelText $sheet $heading 4 'Перераспределения'
+ $sheet.Range("D${heading}:F${heading}").Font.Bold=$true
+ for($i=0;$i -lt $presentation.Redistributions.Count;$i++){
+  $r=$presentation.FooterFirst+$i;$d=$presentation.Redistributions[$i]
+  $parent=@($plan.Rows | Where-Object {$_.Identity -eq $d.ParentKey})[0]
+  Set-ExcelText $sheet $r 4 $parent.Values[3];Set-ExcelText $sheet $r 5 'перераспр.'
+  $sheet.Cells.Item($r,6).Formula=('=F'+$d.TableRow);$sheet.Cells.Item($r,6).Font.Color=255
+ }
+ $sum=$presentation.FooterSum;$before=$presentation.BeforeRow
+ [void]$sheet.Range("D${sum}:E${sum}").Merge();Set-ExcelText $sheet $sum 4 'ИТОГО перераспределений'
+ $sheet.Cells.Item($sum,6).Formula=if($presentation.Redistributions.Count){'=SUM(F'+$presentation.FooterFirst+':F'+($sum-1)+')'}else{'=0'}
+ $sheet.Cells.Item($sum,6).Font.Color=255
+ [void]$sheet.Range("D${before}:E${before}").Merge();Set-ExcelText $sheet $before 4 'ВСЕГО до перераспределений'
+ $sheet.Cells.Item($before,6).Formula=('=F'+$presentation.GrandRow+'-F'+$sum)
+ $sheet.Range("D${before}:F${before}").Font.Bold=$true
+ $sheet.Range("D${heading}:F${before}").WrapText=$true
+ $sheet.Range("F$($presentation.FooterFirst):F${before}").NumberFormat=$presentation.NumberFormat
+ $sheet.Range("D${heading}:F${sum}").Borders.LineStyle=1
+ # Merged labels do not AutoFit reliably in Excel 2010; provide readable footer row heights.
+ $sheet.Rows.Item($heading).RowHeight=24;$sheet.Rows.Item($sum).RowHeight=30;$sheet.Rows.Item($before).RowHeight=30
 }

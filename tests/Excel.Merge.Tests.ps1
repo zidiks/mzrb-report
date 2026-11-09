@@ -35,6 +35,10 @@ try{
  Assert ($ws.Range('B11').Value2 -eq 'Drug B' -and $ws.Range('F11').Value2 -eq 200) 'Unmatched base position lost'
  Assert ($ws.Range('F13').Value2 -eq 1098 -and $ws.Range('H12').Value2 -eq 350) 'Incorrect calculated totals'
  Assert ($ws.Range('F12').HasFormula -and $ws.Range('F13').HasFormula -and $ws.Range('H12').HasFormula) 'Totals must be formulas'
+ Assert ($ws.Range('J6').Value2 -eq 'Курсовые разницы' -and $ws.Range('K6').Value2 -eq 'Комиссионное вознаграждение РУП БЕЛФАРМАЦИЯ') 'Headers not corrected'
+ Assert ($ws.Range('F9').NumberFormat.Contains('#,##0.00')) 'Money number format missing'
+ Assert ($ws.Range('D9').MergeArea.Rows.Count -eq 2 -and $ws.Range('B9').MergeArea.Rows.Count -eq 2) 'Contract/product metadata not merged'
+ Assert ($ws.Range('F17').HasFormula -and $ws.Range('F17').Value2 -eq 0 -and $ws.Range('F19').HasFormula -and $ws.Range('F19').Value2 -eq 1098) 'Redistribution footer formulas failed'
  Assert ($ws.UsedRange.Columns.Count -eq 13) 'Phantom columns remain'
  Assert (Test-Path -LiteralPath (Join-Path $dir 'Проверки\result.html')) 'Merge audit missing'
  Write-Output ('Excel '+$excel.Version+': two-file export round trip passed')

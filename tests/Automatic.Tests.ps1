@@ -30,10 +30,12 @@ $raw.Values[5,7]='Дистриб.контр.';$b.Values[9,11]='ДИСТРИБЬ�
 $s=Auto $raw;$plan=Plan $s
 Assert ($plan.MatchedContracts -eq 1 -and $plan.Rows[0].Values[10] -eq 200) 'Distributor contract abbreviations match full 1C contract names'
 $raw.Values[5,7]='DIFFERENT-123';$s=Auto $raw;$plan=Plan $s
-Assert ($plan.AddedContracts -eq 1 -and $plan.Rows.Count -eq 3 -and $plan.Rows[0].Values[10] -eq 50 -and $plan.Rows[0].Values[12] -eq 3) 'Keep unmatched 1C data and append a missing ledger contract'
-Assert (-not (Needs-Review $s) -and $plan.Rows[2].Values[5] -eq 1500 -and $plan.Rows[2].Values[10] -eq 200 -and $plan.Rows[2].Values[7] -eq $null) 'Added contracts carry ledger values and leave institutions blank without a wizard'
+$old=@($plan.Rows | Where-Object {$_.Values[3] -eq 'ДИСТРИБЬЮТОРСКИЙ КОНТРАКТ' -and $_.Values[1] -eq 'Препарат A'})[0]
+$new=@($plan.Rows | Where-Object {$_.Values[3] -eq 'DIFFERENT-123'})[0]
+Assert ($plan.AddedContracts -eq 1 -and $plan.Rows.Count -eq 3 -and $old.Values[10] -eq 50 -and $old.Values[12] -eq 3) 'Keep unmatched 1C data and append a missing ledger contract'
+Assert (-not (Needs-Review $s) -and $new.Values[5] -eq 1500 -and $new.Values[10] -eq 200 -and $new.Values[7] -eq $null) 'Added contracts carry ledger values and leave institutions blank without a wizard'
 $raw.Values[5,7]='Дистриб.контр.';$raw.Values[5,23]=1600;$s=Auto $raw;$plan=Plan $s
-Assert ($plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq 500 -and @($plan.Notes | Where-Object {$_.Relevant}).Count -eq 1) 'Unknown drug-level shipment allocation is reported, not guessed'
+Assert ($plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq 500 -and @($plan.Notes | Where-Object {$_.Reason.StartsWith('Общий отпуск')}).Count -eq 1) 'Unknown drug-level shipment allocation is reported, not guessed'
 $raw.Values[5,23]=1500;$raw.Values[5,22]='Сентябрь';$raw.Values[6,22]='ком.возн.09';$s=Auto $raw;$plan=Plan $s
 Assert ($s.Groups.Count -eq 0 -and $s.AllContracts.Count -eq 1 -and $plan.MatchedContracts -eq 1) 'Recognize contracts even with no monthly events'
 Assert ($plan.Rows[0].Values[5] -eq 0 -and $plan.Rows[1].Values[5] -eq 0 -and $plan.Total -eq 0) 'A contract present in ledger with no monthly values has computed zeros'
@@ -43,10 +45,10 @@ $s=Auto $raw;$plan=Plan $s
 Assert ($plan.Rows[0].Values[5] -eq 1500 -and $plan.Rows[1].Values[5] -eq 500) 'Use contract date to resolve a reused number'
 $raw.Values[6,7]='';$s=Auto $raw;$plan=Plan $s
 Assert ($plan.MatchedContracts -eq 0 -and $plan.Rows[0].Values[5] -eq 1000) 'Reused number without a unique date/supplier remains unchanged'
-# Signed redistribution is a separate unnumbered row immediately after its parent.
+# Signed redistribution is a separate unnumbered row after the contract block.
 $b.Values[10,14]='01.01.2026';$raw.Values[6,7]='01.01.2026';$raw.Values[6,22]='Октябрь(перер.)';$raw.Values[6,23]=-25
 $s=Auto $raw;$plan=Plan $s
-Assert ($plan.Rows.Count -eq 3 -and $plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq -25 -and $plan.Rows[2].Values[5] -eq 500 -and -not $plan.Rows[1].Values[0]) 'Separate redistribution preserves original shipment split and is not numbered'
+Assert ($plan.Rows.Count -eq 3 -and $plan.Rows[0].Values[5] -eq 1000 -and $plan.Rows[1].Values[5] -eq 500 -and $plan.Rows[2].Values[5] -eq -25 -and -not $plan.Rows[2].Values[0]) 'Separate redistribution preserves original shipment split and is not numbered'
 $s.Lines[0].Transfer=1
 Assert (@(Validate-Session $s $true).Count -gt 0) 'Still reject a broken source total'
 "$script:Count automatic contract checks passed"
