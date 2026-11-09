@@ -36,7 +36,7 @@ try{
  Assert ($ws.Range('F13').Value2 -eq 1098 -and $ws.Range('H12').Value2 -eq 350) 'Incorrect calculated totals'
  Assert ($ws.Range('F12').HasFormula -and $ws.Range('F13').HasFormula -and $ws.Range('H12').HasFormula) 'Totals must be formulas'
  Assert ($ws.Range('J6').Value2 -eq 'Курсовые разницы' -and $ws.Range('K6').Value2 -eq 'Комиссионное вознаграждение РУП БЕЛФАРМАЦИЯ') 'Headers not corrected'
- Assert ($ws.Range('F9').NumberFormat.Contains('#,##0.00')) 'Money number format missing'
+ Assert ($ws.Range('F9').NumberFormat.Contains('0.00')) 'Money number format missing'
  # Force invariant-format rejection while forwarding the localized setter to real Excel.
  foreach($address in @('F9','J11','K9')){
   $actual=$ws.Range($address);$before=$actual.Value2
@@ -46,7 +46,9 @@ try{
   Set-ExcelMoneyFormat $probe $address
   Assert ($actual.Value2 -eq $before -and $actual.NumberFormat.Contains('#,##0.00')) 'Localized formatting must preserve positive, negative and zero values in real Excel'
  }
- Assert ($ws.Range('F13').MergeArea.Columns.Count -eq 2 -and $ws.Range('F13').MergeArea.NumberFormat.Contains('#,##0.00')) 'Inherited F:G grand total must retain its merge and receive the money format'
+ Assert ($ws.Range('F13').MergeArea.Columns.Count -eq 2 -and $ws.Range('F13').Text -match '^1[ \u00a0\u202f]098[.,]00$') 'Inherited F:G grand total must retain its merge and receive the money format'
+ Assert ($ws.Range('F4').MergeArea.HorizontalAlignment -eq -4108 -and $ws.Range('F4').MergeArea.VerticalAlignment -eq -4108) 'Period header must be centered in its merged block'
+ Assert ($ws.Range('A9').MergeArea.Rows.Count -eq 2 -and $ws.Range('A11').Value2 -eq '2') 'One number per contract, including institution continuation rows'
  Assert ($ws.Range('D9').MergeArea.Rows.Count -eq 2 -and $ws.Range('B9').MergeArea.Rows.Count -eq 2) 'Contract/product metadata not merged'
  Assert ($ws.Range('F17').HasFormula -and $ws.Range('F17').Value2 -eq 0 -and $ws.Range('F19').HasFormula -and $ws.Range('F19').Value2 -eq 1098) 'Redistribution footer formulas failed'
  Assert ($ws.UsedRange.Columns.Count -eq 13) 'Phantom columns remain'

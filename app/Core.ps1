@@ -475,7 +475,7 @@ function Complete-MergedReport($s,$plan,[string]$output){
   $labels=@{Transfer='Отпуск';Redistribution='Перераспределение (отдельная строка)';Conversion='Покупка валюты';Fx='Курсовые разницы';Commission='Комиссия';Discount='Скидки';Other='Прочие расходы';Name='Наименование'}
   foreach($c in $plan.Changes){[void]$html.Append("<tr><td>$($c.BasisRow)</td><td>$(Html $c.Contract)</td><td>$(Html $c.Name)</td><td>$(Html $labels[$c.Field])</td><td>$(Html $c.Before)</td><td>$(Html $(if($c.Field -eq 'Name'){$c.After}else{Fixed $c.After}))</td></tr>")};[void]$html.Append('</table><h2>Не перенесены: значения 1С сохранены</h2>');foreach($line in $plan.Skipped){[void]$html.Append("<p>$(Html $line.Contract) — $(Html $line.Name): $(Html (($script:Fields | ForEach-Object {$labels[$_]+': '+(Fixed $line.$_)}) -join '; '))</p>")};[void]$html.Append("<p>ВСЕГО: $(Html (Fixed $plan.Total))</p>")
   $removedCount=if($plan.PSObject.Properties['RemovedRows']){$plan.RemovedRows.Count}else{0}
-  [void]$html.Append('<h2>Очистка и нумерация</h2>');[void]$html.Append("<p>Добавлено договоров из расчётов: $($plan.AddedContracts). Удалено строк без данных: $removedCount. Позиции пронумерованы после всех изменений; учреждения и перераспределения номера не получают.</p>");foreach($r in $plan.RemovedRows){[void]$html.Append("<p>Удалена строка 1С $($r.BasisRow): $(Html $r.Contract), $(Html $r.Supplier), $(Html $r.Date).</p>")}
+  [void]$html.Append('<h2>Очистка и нумерация</h2>');[void]$html.Append("<p>Добавлено договоров из расчётов: $($plan.AddedContracts). Удалено строк без данных: $removedCount. Договоры пронумерованы после всех изменений: один номер на блок договора; учреждения и перераспределения отдельных номеров не получают.</p>");foreach($r in $plan.RemovedRows){[void]$html.Append("<p>Удалена строка 1С $($r.BasisRow): $(Html $r.Contract), $(Html $r.Supplier), $(Html $r.Date).</p>")}
   [void]$html.Append('<h2>Замечания автоматического сопоставления</h2>');foreach($note in $s.AutomationNotes){[void]$html.Append("<p>Строка расчётов $($note.SourceRow), $(Html $note.Contract), $(Html $note.Name): $(Html $note.Reason)</p>")};foreach($warning in $s.Warnings){[void]$html.Append("<p>$(Html $warning)</p>")}
   [IO.File]::WriteAllText((Join-Path $auditDir ([IO.Path]::GetFileNameWithoutExtension($output)+'.html')),$html.ToString(),[Text.Encoding]::UTF8)
 }
@@ -610,9 +610,12 @@ function Finalize-OutputRows($rows,$session=$null){
   if($useful){$kept.Add($row)}else{$removed.Add([pscustomobject]@{BasisRow=$row.Row;Contract=$row.Values[3];Supplier=$row.Values[2];Date=$row.Values[4]})}
  }
  $arranged=if($null -ne $session){Arrange-ReportRows $kept $session}else{[pscustomobject]@{Rows=$kept.ToArray();Blocks=@();Notes=@()}}
+ $main=@($arranged.Rows | Where-Object {$_.IsMain -and -not $_.IsRedistribution})
+ foreach($row in $arranged.Rows){$row.Values[0]=$null}
  $number=0
- foreach($row in $arranged.Rows){if($row.IsMain -and -not $row.IsRedistribution){$number++;$row.Values[0]=[string]$number}else{$row.Values[0]=$null}}
- return [pscustomobject]@{Rows=$arranged.Rows;Removed=$removed.ToArray();PositionCount=$number;ContractBlocks=$arranged.Blocks;Notes=$arranged.Notes}
+ if($null -ne $session){foreach($block in $arranged.Blocks){$number++;$arranged.Rows[$block.StartIndex].Values[0]=[string]$number}}
+ else{foreach($row in $main){$number++;$row.Values[0]=[string]$number}}
+ return [pscustomobject]@{Rows=$arranged.Rows;Removed=$removed.ToArray();PositionCount=$main.Count;ContractBlocks=$arranged.Blocks;Notes=$arranged.Notes}
 }
 function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$changes,$sourceRows){
  $parents=@($members | ForEach-Object {$_.Identity})
@@ -636,19 +639,39 @@ function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$chan
 }
 
 function Report-NumberFormat {return '#,##0.00'}
-function Local-ReportNumberFormat($application){
+function Local-ReportNumberFormat($application,[string]$format=''){
  if($application.UseSystemSeparators){$decimal=[string]$application.International(3);$group=[string]$application.International(4)}
  else{$decimal=[string]$application.DecimalSeparator;$group=[string]$application.ThousandsSeparator}
  if(-not $decimal -or -not $group){throw 'Excel не вернул десятичный разделитель или разделитель тысяч.'}
+ if($format -and $format -ne (Report-NumberFormat)){return $format.Replace('.',$decimal)}
  return ('#'+$group+'##0'+$decimal+'00')
 }
-function Set-ExcelMoneyFormat($range,[string]$address){
- $format=Report-NumberFormat
+function Set-ExcelMoneyFormat($range,[string]$address,[string]$format=''){
+ if(-not $format){$format=Report-NumberFormat}
  try{$range.NumberFormat=$format;return}catch{$invariantError=$_.Exception.Message}
  $local=''
- try{$local=Local-ReportNumberFormat $range.Application;$range.NumberFormatLocal=$local;return}
+ try{$local=Local-ReportNumberFormat $range.Application $format;$range.NumberFormatLocal=$local;return}
  catch{throw ('Не удалось задать денежный формат ячеек '+$address+'. NumberFormat="'+$format+'": '+$invariantError+'; NumberFormatLocal="'+$local+'": '+$_.Exception.Message)}
 }
+# Literal spaces keep grouping independent of the computer's thousands separator.
+# Choose enough digit groups for the generated value; values and formulas stay numeric.
+function Spaced-ReportNumberFormat($value){
+ $absolute=[Math]::Abs((Money $value));$groups=0
+ while($absolute -ge 1000){$groups++;$absolute=[decimal]::Truncate($absolute/1000)}
+ if($groups -eq 0){return '0.00'}
+ return ('#\ '+('###\ '*($groups-1))+'##0.00')
+}
+function Get-ReportMoneyFormats($rows){
+ $runs=New-Object Collections.Generic.List[object];$totalRow=9+$rows.Count
+ foreach($entry in @(@('F',5),@('H',7),@('I',8),@('J',9),@('K',10),@('L',11),@('M',12))){
+  $column=$entry[0];$index=[int]$entry[1];$sum=[decimal]0
+  foreach($row in $rows){$sum+=Money $row.Values[$index]}
+  if($rows.Count){$runs.Add([pscustomobject]@{Column=$column;FirstRow=9;LastRow=$totalRow-1;Format=(Report-NumberFormat)})}
+  $runs.Add([pscustomobject]@{Column=$column;FirstRow=$totalRow;LastRow=$totalRow;Format=(Spaced-ReportNumberFormat $sum)})
+ }
+ return ,$runs.ToArray()
+}
+
 function Name-ScriptRank($value){
  $m=[regex]::Match((Text $value),'\p{L}')
  if(-not $m.Success){return 3}
@@ -734,26 +757,27 @@ function Get-ReportPresentation($plan){
  $redisTotal=[decimal]0;foreach($d in $details){$redisTotal+=$d.Amount}
  $merges=New-Object Collections.Generic.List[object]
  foreach($block in $plan.ContractBlocks){
-  if($block.DataEndIndex -gt $block.StartIndex){foreach($column in @(3,4,5)){
+  if($block.DataEndIndex -gt $block.StartIndex){foreach($column in @(1,3,4,5)){
    $values=@(for($i=$block.StartIndex;$i -le $block.DataEndIndex;$i++){if((Text $plan.Rows[$i].Values[$column-1]) -ne ''){Text $plan.Rows[$i].Values[$column-1]}}) | Select-Object -Unique
    if(@($values).Count -eq 1 -and (Text $values) -ne ''){$merges.Add([pscustomobject]@{Column=$column;FirstRow=9+$block.StartIndex;LastRow=9+$block.DataEndIndex})}
   }}
-  foreach($product in $block.Products){if($product.EndIndex -gt $product.StartIndex){foreach($column in @(1,2)){
+  foreach($product in $block.Products){if($product.EndIndex -gt $product.StartIndex){foreach($column in @(2)){
    $values=@(for($i=$product.StartIndex;$i -le $product.EndIndex;$i++){if((Text $plan.Rows[$i].Values[$column-1]) -ne ''){Text $plan.Rows[$i].Values[$column-1]}}) | Select-Object -Unique
    if(@($values).Count -eq 1 -and (Text $values) -ne ''){$merges.Add([pscustomobject]@{Column=$column;FirstRow=9+$product.StartIndex;LastRow=9+$product.EndIndex})}
   }}}
  }
- return [pscustomobject]@{TotalRow=$total;GrandRow=$grand;FooterHeading=$heading;FooterFirst=$first;FooterSum=$sumRow;BeforeRow=$before;EndRow=$before;Redistributions=$details.ToArray();RedistributionTotal=$redisTotal;TotalBeforeRedistribution=($plan.Total-$redisTotal);Merges=$merges.ToArray();NumberFormat=(Report-NumberFormat)}
+ return [pscustomobject]@{TotalRow=$total;GrandRow=$grand;FooterHeading=$heading;FooterFirst=$first;FooterSum=$sumRow;BeforeRow=$before;EndRow=$before;Redistributions=$details.ToArray();RedistributionTotal=$redisTotal;TotalBeforeRedistribution=($plan.Total-$redisTotal);Merges=$merges.ToArray();NumberFormat=(Report-NumberFormat);MoneyFormats=(Get-ReportMoneyFormats $plan.Rows);GrandFormat=(Spaced-ReportNumberFormat $plan.Total)}
 }
 
 function Set-ReportMoneyFormats($sheet,$presentation){
  # The inherited grand-total cell spans F:G. Formatting a column through that
  # row touches only part of the merge and Excel rejects NumberFormat (1004).
- foreach($column in @('F','H','I','J','K','L','M')){$address="${column}9:${column}$($presentation.TotalRow)";Set-ExcelMoneyFormat ($sheet.Range($address)) $address}
- Set-ExcelMoneyFormat ($sheet.Range("F$($presentation.GrandRow)").MergeArea) ("F$($presentation.GrandRow) (ВСЕГО)")
+ foreach($run in $presentation.MoneyFormats){$address="$($run.Column)$($run.FirstRow):$($run.Column)$($run.LastRow)";Set-ExcelMoneyFormat ($sheet.Range($address)) $address $run.Format}
+ Set-ExcelMoneyFormat ($sheet.Range("F$($presentation.GrandRow)").MergeArea) ("F$($presentation.GrandRow) (ВСЕГО)") $presentation.GrandFormat
 }
 
 function Apply-ReportPresentation($sheet,$plan,$presentation){
+ $period=$sheet.Range('F4').MergeArea;$period.HorizontalAlignment=-4108;$period.VerticalAlignment=-4108
  Set-ExcelText $sheet 6 10 'Курсовые разницы'
  Set-ExcelText $sheet 6 11 'Комиссионное вознаграждение РУП БЕЛФАРМАЦИЯ'
  Set-ReportMoneyFormats $sheet $presentation
@@ -769,6 +793,7 @@ function Apply-ReportPresentation($sheet,$plan,$presentation){
   $parent=@($plan.Rows | Where-Object {$_.Identity -eq $d.ParentKey})[0]
   Set-ExcelText $sheet $r 4 $parent.Values[3];Set-ExcelText $sheet $r 5 'перераспр.'
   $sheet.Cells.Item($r,6).Formula=('=F'+$d.TableRow);$sheet.Cells.Item($r,6).Font.Color=255
+  Set-ExcelMoneyFormat ($sheet.Range("F$r")) ("F$r") (Spaced-ReportNumberFormat $d.Amount)
  }
  $sum=$presentation.FooterSum;$before=$presentation.BeforeRow
  [void]$sheet.Range("D${sum}:E${sum}").Merge();Set-ExcelText $sheet $sum 4 'ИТОГО перераспределений'
@@ -778,7 +803,8 @@ function Apply-ReportPresentation($sheet,$plan,$presentation){
  $sheet.Cells.Item($before,6).Formula=('=F'+$presentation.GrandRow+'-F'+$sum)
  $sheet.Range("D${before}:F${before}").Font.Bold=$true
  $sheet.Range("D${heading}:F${before}").WrapText=$true
- $address="F$($presentation.FooterFirst):F${before}";Set-ExcelMoneyFormat ($sheet.Range($address)) $address
+ Set-ExcelMoneyFormat ($sheet.Range("F$sum")) ("F$sum") (Spaced-ReportNumberFormat $presentation.RedistributionTotal)
+ Set-ExcelMoneyFormat ($sheet.Range("F$before")) ("F$before") (Spaced-ReportNumberFormat $presentation.TotalBeforeRedistribution)
  $sheet.Range("D${heading}:F${sum}").Borders.LineStyle=1
  # Merged labels do not AutoFit reliably in Excel 2010; provide readable footer row heights.
  $sheet.Rows.Item($heading).RowHeight=24;$sheet.Rows.Item($sum).RowHeight=30;$sheet.Rows.Item($before).RowHeight=30

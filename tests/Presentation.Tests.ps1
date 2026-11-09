@@ -18,7 +18,7 @@ Assert ($main[2].Values[1] -eq 'Абрикос' -and $main[3].Values[1] -eq 'Я�
 Assert ($layout.ContractBlocks.Count -eq 4) 'Separated occurrences of a contract form one block'
 $group=@($layout.ContractBlocks | Where-Object {$_.Key.StartsWith('C-1|')})[0]
 Assert ($layout.Rows[$group.EndIndex].IsRedistribution -and $group.DataEndIndex -lt $group.EndIndex) 'Redistribution is last after all contract positions and institutions'
-Assert (($main | ForEach-Object {$_.Values[0]}) -join ',' -eq '1,2,3,4,5') 'Numbering occurs after final grouping and sorting'
+Assert (($main | ForEach-Object {$_.Values[0]}) -join ',' -eq '1,2,3,,4') 'One sequential number per contract after final grouping and sorting'
 Assert ($i.Values[6] -eq 'Клиника' -and $i.Values[7] -eq 10) 'Expand a funded ditto mark before sorting'
 Assert ($b.Values[6] -eq $null) 'Remove empty institution dash'
 $x=Row 15 'X' 'Company, РФ' 'X' 0;$x.Values[6]='Клиника — центр';Clean-InstitutionNames @($x)
@@ -32,7 +32,10 @@ Assert ($total -eq 255 -and $p.RedistributionTotal -eq -5 -and $p.TotalBeforeRed
 Assert ($p.Redistributions.Count -eq 1 -and $p.Redistributions[0].TableRow -eq (9+$group.EndIndex)) 'Footer references the real table redistribution row'
 Assert ($p.FooterHeading -gt $p.GrandRow -and $p.BeforeRow -gt $p.FooterSum -and $p.EndRow -eq $p.BeforeRow) 'Footer is below main totals and included in print range'
 Assert ($p.NumberFormat -eq '#,##0.00') 'Use a standard numeric format with grouping and exactly two decimals, without locale extensions'
-Assert ($p.Merges.Count -eq 5) 'Merge safe contract metadata and per-drug labels'
+Assert ($p.Merges.Count -eq 5) 'Merge contract number and metadata across the whole block; keep per-drug labels'
+$numberMerges=@($p.Merges | Where-Object {$_.Column -eq 1})
+Assert ($numberMerges.Count -eq 1 -and $numberMerges[0].FirstRow -eq (9+$group.StartIndex) -and $numberMerges[0].LastRow -eq (9+$group.DataEndIndex)) 'Contract number merge spans every drug and institution but excludes redistribution'
+Assert ($layout.PositionCount -eq 5 -and @($layout.Rows | Where-Object {$_.Values[0]}).Count -eq 4) 'Keep drug-position count separate from count of contract numbers'
 foreach($m in $p.Merges){Assert ($m.Column -le 5 -and $m.LastRow -lt (9+$group.EndIndex)) 'Never merge financial data or the redistribution label'}
 # A month without redistribution still has a valid zero summary and unchanged before-total.
 $empty=[pscustomobject]@{Rows=@($e);ContractBlocks=@();Total=[decimal]60};$p0=Get-ReportPresentation $empty
@@ -57,8 +60,8 @@ $fake | Add-Member ScriptMethod Range {
 $rejected=$false;try{$fake.Range('F9:F'+$p.GrandRow).NumberFormat=$p.NumberFormat}catch{$rejected=$true}
 Assert $rejected 'Regression fixture rejects partial access to the inherited merged grand total'
 Set-ReportMoneyFormats $fake $p
-Assert ($fake.Writes.Count -eq 8 -and $fake.Writes.Contains('F'+$p.GrandRow+':G'+$p.GrandRow)) 'Format the entire merged grand total separately'
-foreach($column in @('F','H','I','J','K','L','M')){Assert ($fake.Writes.Contains($column+'9:'+$column+$p.TotalRow)) 'Column formatting stops at subtotal before the merged grand-total row'}
+Assert ($fake.Writes.Count -eq ($p.MoneyFormats.Count+1) -and $fake.Writes.Contains('F'+$p.GrandRow+':G'+$p.GrandRow)) 'Format the entire merged grand total separately'
+foreach($run in $p.MoneyFormats){Assert ($run.LastRow -le $p.TotalRow -and $fake.Writes.Contains($run.Column+$run.FirstRow+':'+$run.Column+$run.LastRow)) 'Format every run without crossing the merged grand-total row'}
 # Simulate COM rejecting invariant format on a localized Office installation.
 function Local-FormatFixture([bool]$system,[string]$decimal,[string]$group,[bool]$rejectLocal=$false){
  $app=[pscustomobject]@{UseSystemSeparators=$system;DecimalSeparator=$decimal;ThousandsSeparator=$group}
@@ -76,4 +79,18 @@ $r=Local-FormatFixture $false '.' ',';Set-ExcelMoneyFormat $r 'I9:I12'
 Assert ($r.Accepted -eq '#,##0.00') 'Localized fallback also supports English Excel'
 $r=Local-FormatFixture $true ',' ' ' $true;$detail='';try{Set-ExcelMoneyFormat $r 'K9:K12'}catch{$detail=$_.Exception.Message}
 Assert ($detail.Contains('K9:K12') -and $detail.Contains('NumberFormat COM rejection') -and $detail.Contains('NumberFormatLocal COM rejection')) 'If both formats fail, stop with range address and both errors instead of ignoring formatting failure'
+# Explicit spaces must group every three digits regardless of Excel's group separator.
+foreach($case in @(@(0,'0.00'),@(999.99,'0.00'),@(1000,'#\ ##0.00'),@(-12003,'#\ ##0.00'),@(1000001,'#\ ###\ ##0.00'),@(-1234567890.12,'#\ ###\ ###\ ##0.00'),@(999999.999,'#\ ###\ ##0.00'))){
+ Assert ((Spaced-ReportNumberFormat $case[0]) -eq $case[1]) 'Pick literal-space groups for positive, negative, zero and rounded boundary amounts'
+}
+$r=Local-FormatFixture $false ',' '.';Set-ExcelMoneyFormat $r 'F204' (Spaced-ReportNumberFormat 1234567.89)
+Assert ($r.Accepted -eq '#\ ###\ ##0,00') 'Localized fallback retains literal spaces instead of using configured period as thousands separator'
+$wide=Row 1 'Drug' 'Supplier' 'D-1' 1234567.89;$wide.Values[7]=12003;$wide.Values[8]=-0.01
+$runs=Get-ReportMoneyFormats @($wide)
+foreach($column in @('F','H','I','J','K','L','M')){
+ $columnRuns=@($runs | Where-Object {$_.Column -eq $column})
+ Assert ($columnRuns[0].FirstRow -eq 9 -and $columnRuns[-1].LastRow -eq 10) 'Format runs cover every monetary column including subtotal'
+}
+Assert (@($runs | Where-Object {$_.Column -eq 'F' -and $_.Format -eq '#\ ###\ ##0.00'}).Count -eq 1) 'Large subtotal uses all required space groups'
+Assert (@($runs | Where-Object {$_.FirstRow -eq 9 -and $_.LastRow -eq 9 -and $_.Format -eq (Report-NumberFormat)}).Count -eq 7) 'Keep the existing standard format inside the table; force spaces only in totals'
 "$count presentation checks passed"
