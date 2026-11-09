@@ -34,3 +34,17 @@ function Analyze-BuiltIn([string]$source,[string]$sheet,[datetime]$period,[bool]
  $s | Add-Member -NotePropertyName EngineHash -NotePropertyValue (File-Sha256 (Join-Path $PSScriptRoot 'Core.ps1')) -Force
  Save-Cache $s;return $s
 }
+
+# EndInvoke wraps the worker's terminating ErrorRecord; keep the original stack.
+function Resolve-WorkError($record){
+ $selected=$record;$exception=$record.Exception
+ while($null -ne $exception){
+  if($exception.PSObject.Properties['ErrorRecord'] -and $null -ne $exception.ErrorRecord -and $exception.ErrorRecord.ScriptStackTrace){$selected=$exception.ErrorRecord}
+  $exception=$exception.InnerException
+ }
+ return $selected
+}
+function Work-ErrorDetails($record){
+ $record=Resolve-WorkError $record
+ return ($record.ToString()+"`r`n"+$record.InvocationInfo.PositionMessage+"`r`n"+$record.ScriptStackTrace+"`r`n"+$record.FullyQualifiedErrorId+"`r`n"+$record.Exception.GetType().FullName+' HRESULT=0x'+$record.Exception.HResult.ToString('X8'))
+}

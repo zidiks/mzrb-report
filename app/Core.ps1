@@ -427,7 +427,7 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
   $basis=Read-Basis (Read-Matrix $ws) ([datetime]::ParseExact($s.PeriodKey,'yyyy-MM',$script:Invariant));$plan=Merge-Basis $s $basis
   $presentation=Get-ReportPresentation $plan
   if($plan.Rows.Count -gt 65000 -or $presentation.EndRow -gt 65536){throw 'Слишком много строк для формата XLS с учётом сводки перераспределений.'}
-  $widths=Compact-Columns $ws;$format=$presentation.NumberFormat
+  $widths=Compact-Columns $ws
   $donor=$book.Worksheets.Add();[void]$ws.Range("A9:M$($basis.TotalRow-1)").Copy($donor.Range('A1'));[void]$donor.UsedRange.ClearContents()
   [void]$ws.Rows.Item("9:$($basis.TotalRow-1)").Delete();[void]$ws.Rows.Item("9:$($plan.Rows.Count+8)").Insert()
   $row=9
@@ -444,9 +444,9 @@ function Save-MergedReport($s,[string]$output,[bool]$final){
   $donor.Delete();$total=$row;$grand=$row+1
   $ws.Range("B9:G$($total-1)").WrapText=$true;[void]$ws.Range("A9:M$($total-1)").Rows.AutoFit()
   [void]$ws.Range("A${total}:M${grand}").ClearContents()
-  foreach($c in @('F','H','I','J','K','L','M')){$ws.Range("$c$total").Formula="=SUM(${c}9:${c}$($total-1))";$ws.Range("$c$total").NumberFormat=$format}
+  foreach($c in @('F','H','I','J','K','L','M')){$ws.Range("$c$total").Formula="=SUM(${c}9:${c}$($total-1))"}
   Set-ExcelText $ws $total 5 'ИТОГО:';Set-ExcelText $ws $grand 5 'ВСЕГО:'
-  $ws.Range("F$grand").Formula="=SUM(F$total,I$total,J$total,K$total,L$total,M$total)";$ws.Range("F$grand").MergeArea.NumberFormat=$format
+  $ws.Range("F$grand").Formula="=SUM(F$total,I$total,J$total,K$total,L$total,M$total)"
   Apply-ReportPresentation $ws $plan $presentation
   $excel.Calculation=-4105;$excel.CalculateFull()
   if((Money $ws.Range("F$grand").Value2) -ne $plan.Total){throw 'Итог Excel не совпал с суммой объединённых данных.'}
@@ -635,7 +635,20 @@ function Add-OutputRedistribution($rows,$members,$primary,[decimal]$amount,$chan
  }
 }
 
-function Report-NumberFormat {return '[$-419]#,##0.00;[$-419]-#,##0.00;[$-419]0.00'}
+function Report-NumberFormat {return '#,##0.00'}
+function Local-ReportNumberFormat($application){
+ if($application.UseSystemSeparators){$decimal=[string]$application.International(3);$group=[string]$application.International(4)}
+ else{$decimal=[string]$application.DecimalSeparator;$group=[string]$application.ThousandsSeparator}
+ if(-not $decimal -or -not $group){throw 'Excel не вернул десятичный разделитель или разделитель тысяч.'}
+ return ('#'+$group+'##0'+$decimal+'00')
+}
+function Set-ExcelMoneyFormat($range,[string]$address){
+ $format=Report-NumberFormat
+ try{$range.NumberFormat=$format;return}catch{$invariantError=$_.Exception.Message}
+ $local=''
+ try{$local=Local-ReportNumberFormat $range.Application;$range.NumberFormatLocal=$local;return}
+ catch{throw ('Не удалось задать денежный формат ячеек '+$address+'. NumberFormat="'+$format+'": '+$invariantError+'; NumberFormatLocal="'+$local+'": '+$_.Exception.Message)}
+}
 function Name-ScriptRank($value){
  $m=[regex]::Match((Text $value),'\p{L}')
  if(-not $m.Success){return 3}
@@ -736,8 +749,8 @@ function Get-ReportPresentation($plan){
 function Set-ReportMoneyFormats($sheet,$presentation){
  # The inherited grand-total cell spans F:G. Formatting a column through that
  # row touches only part of the merge and Excel rejects NumberFormat (1004).
- foreach($column in @('F','H','I','J','K','L','M')){$sheet.Range("${column}9:${column}$($presentation.TotalRow)").NumberFormat=$presentation.NumberFormat}
- $sheet.Range("F$($presentation.GrandRow)").MergeArea.NumberFormat=$presentation.NumberFormat
+ foreach($column in @('F','H','I','J','K','L','M')){$address="${column}9:${column}$($presentation.TotalRow)";Set-ExcelMoneyFormat ($sheet.Range($address)) $address}
+ Set-ExcelMoneyFormat ($sheet.Range("F$($presentation.GrandRow)").MergeArea) ("F$($presentation.GrandRow) (ВСЕГО)")
 }
 
 function Apply-ReportPresentation($sheet,$plan,$presentation){
@@ -765,7 +778,7 @@ function Apply-ReportPresentation($sheet,$plan,$presentation){
  $sheet.Cells.Item($before,6).Formula=('=F'+$presentation.GrandRow+'-F'+$sum)
  $sheet.Range("D${before}:F${before}").Font.Bold=$true
  $sheet.Range("D${heading}:F${before}").WrapText=$true
- $sheet.Range("F$($presentation.FooterFirst):F${before}").NumberFormat=$presentation.NumberFormat
+ $address="F$($presentation.FooterFirst):F${before}";Set-ExcelMoneyFormat ($sheet.Range($address)) $address
  $sheet.Range("D${heading}:F${sum}").Borders.LineStyle=1
  # Merged labels do not AutoFit reliably in Excel 2010; provide readable footer row heights.
  $sheet.Rows.Item($heading).RowHeight=24;$sheet.Rows.Item($sum).RowHeight=30;$sheet.Rows.Item($before).RowHeight=30

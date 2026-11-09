@@ -41,9 +41,9 @@ function Month-Display([datetime]$date){$text=$date.ToString('MMMM yyyy',$script
 function Set-Visible($control,[bool]$value){$control.Visibility=if($value){'Visible'}else{'Collapsed'}}
 function Show-Message([string]$title,[string]$body){$MessageTitle.Text=$title;$MessageBody.Text=$body;Set-Visible $MessagePanel $true;Set-Visible $ResultPanel $false}
 function Clear-Message {Set-Visible $MessagePanel $false;$script:LastError=''}
-function Log-Error($record){try{[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'Data\Последняя ошибка.txt'),$record.ToString()+"`r`n"+$record.ScriptStackTrace,[Text.Encoding]::UTF8)}catch{}}
+function Log-Error($record){try{[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'Data\Последняя ошибка.txt'),('Версия '+(App-Version).ToString()+"`r`n"+(Work-ErrorDetails $record)),[Text.Encoding]::UTF8)}catch{}}
 function Show-Error($record){
- Log-Error $record;$error=$record.Exception;while($null -ne $error.InnerException){$error=$error.InnerException};$text=$error.Message;if(-not $text){$text=$record.ToString()}
+ $record=Resolve-WorkError $record;Log-Error $record;$error=$record.Exception;while($null -ne $error.InnerException){$error=$error.InnerException};$text=$error.Message;if(-not $text){$text=$record.ToString()}
  if($text -match '80040154|REGDB_E_CLASSNOTREG'){$text='Для формирования отчёта нужен установленный Microsoft Excel.'}
  $script:LastError=$text
  if($Sheets.Items.Count -eq 0){$ReportMonth.Text='—';$script:PeriodDate=$null;Show-Message 'Не удалось прочитать исходный файл' $text}else{Show-Message 'Не удалось сформировать отчёт' $text}

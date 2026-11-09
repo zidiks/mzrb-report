@@ -31,7 +31,7 @@ $p=Get-ReportPresentation $plan
 Assert ($total -eq 255 -and $p.RedistributionTotal -eq -5 -and $p.TotalBeforeRedistribution -eq 260) 'Footer reconciles net total and redistribution without counting it twice'
 Assert ($p.Redistributions.Count -eq 1 -and $p.Redistributions[0].TableRow -eq (9+$group.EndIndex)) 'Footer references the real table redistribution row'
 Assert ($p.FooterHeading -gt $p.GrandRow -and $p.BeforeRow -gt $p.FooterSum -and $p.EndRow -eq $p.BeforeRow) 'Footer is below main totals and included in print range'
-Assert ($p.NumberFormat.Contains('[$-419]') -and $p.NumberFormat.Contains('#,##0.00')) 'Use Russian grouping and exactly two decimals'
+Assert ($p.NumberFormat -eq '#,##0.00') 'Use a standard numeric format with grouping and exactly two decimals, without locale extensions'
 Assert ($p.Merges.Count -eq 5) 'Merge safe contract metadata and per-drug labels'
 foreach($m in $p.Merges){Assert ($m.Column -le 5 -and $m.LastRow -lt (9+$group.EndIndex)) 'Never merge financial data or the redistribution label'}
 # A month without redistribution still has a valid zero summary and unchanged before-total.
@@ -59,4 +59,21 @@ Assert $rejected 'Regression fixture rejects partial access to the inherited mer
 Set-ReportMoneyFormats $fake $p
 Assert ($fake.Writes.Count -eq 8 -and $fake.Writes.Contains('F'+$p.GrandRow+':G'+$p.GrandRow)) 'Format the entire merged grand total separately'
 foreach($column in @('F','H','I','J','K','L','M')){Assert ($fake.Writes.Contains($column+'9:'+$column+$p.TotalRow)) 'Column formatting stops at subtotal before the merged grand-total row'}
+# Simulate COM rejecting invariant format on a localized Office installation.
+function Local-FormatFixture([bool]$system,[string]$decimal,[string]$group,[bool]$rejectLocal=$false){
+ $app=[pscustomobject]@{UseSystemSeparators=$system;DecimalSeparator=$decimal;ThousandsSeparator=$group}
+ $app | Add-Member ScriptMethod International {param($index);if($index -eq 3){return ','};if($index -eq 4){return [string][char]160};throw 'Unexpected International index'}
+ $r=[pscustomobject]@{Application=$app;Accepted='';RejectLocal=$rejectLocal;InvariantAttempts=0;LocalAttempts=0}
+ $r | Add-Member ScriptProperty NumberFormat {''} {param($value);$this.InvariantAttempts++;throw 'NumberFormat COM rejection'}
+ $r | Add-Member ScriptProperty NumberFormatLocal {$this.Accepted} {param($value);$this.LocalAttempts++;if($this.RejectLocal){throw 'NumberFormatLocal COM rejection'};$this.Accepted=$value}
+ return $r
+}
+$r=Local-FormatFixture $true '.' ',';Set-ExcelMoneyFormat $r 'F9:F12'
+Assert ($r.Accepted -eq ('#'+[char]160+'##0,00') -and $r.InvariantAttempts -eq 1 -and $r.LocalAttempts -eq 1) 'Localized fallback uses active system separators reported by Excel'
+$r=Local-FormatFixture $false ',' ' ';Set-ExcelMoneyFormat $r 'H9:H12'
+Assert ($r.Accepted -eq '# ##0,00') 'Localized fallback honors custom Excel separators'
+$r=Local-FormatFixture $false '.' ',';Set-ExcelMoneyFormat $r 'I9:I12'
+Assert ($r.Accepted -eq '#,##0.00') 'Localized fallback also supports English Excel'
+$r=Local-FormatFixture $true ',' ' ' $true;$detail='';try{Set-ExcelMoneyFormat $r 'K9:K12'}catch{$detail=$_.Exception.Message}
+Assert ($detail.Contains('K9:K12') -and $detail.Contains('NumberFormat COM rejection') -and $detail.Contains('NumberFormatLocal COM rejection')) 'If both formats fail, stop with range address and both errors instead of ignoring formatting failure'
 "$count presentation checks passed"

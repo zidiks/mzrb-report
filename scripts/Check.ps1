@@ -20,6 +20,7 @@ foreach($name in @('Main.xaml','Review.xaml')){
 & (Join-Path $root 'tests\Output.Layout.Tests.ps1')
 & (Join-Path $root 'tests\Presentation.Tests.ps1')
 & (Join-Path $root 'tests\Completion.Tests.ps1')
+& (Join-Path $root 'tests\Work.Errors.Tests.ps1')
 & (Join-Path $root 'tests\Layout.Tests.ps1')
 & (Join-Path $root 'tests\Excel.Template.Tests.ps1')
 & (Join-Path $root 'tests\Excel.Merge.Tests.ps1')
